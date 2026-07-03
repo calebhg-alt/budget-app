@@ -345,11 +345,28 @@
       <div class="section-title" style="margin-top:0;"><h3>Discover recipes online</h3></div>
       <div class="card">
         <div class="form-row">
+          <div class="field"><label>Source</label>
+            <select id="mealSourceSelect">
+              <option value="themealdb">TheMealDB — free, no key needed</option>
+              <option value="spoonacular">Spoonacular — free key required</option>
+              <option value="edamam">Edamam — free key required</option>
+            </select>
+          </div>
           <div class="field" style="flex:1; min-width:200px;"><label>Search by dish name</label><input type="text" id="mealSearchInput" placeholder="e.g. chicken curry, lasagna, tacos"></div>
           <button class="btn ghost small" id="mealSearchBtn">Search</button>
           <button class="btn ghost small" id="mealRandomBtn">Surprise me</button>
         </div>
-        <div class="parse-note">Recipe data from <a href="https://www.themealdb.com/" target="_blank" rel="noopener">TheMealDB</a> — ingredient costs are still estimated locally, so review them after adding.</div>
+
+        <div id="sourceKeyPanel" class="hidden" style="background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:12px; margin-top:10px;">
+          <div class="form-row" id="sourceKeyFields"></div>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap;">
+            <button class="btn ghost small" id="saveSourceKeyBtn">Save key</button>
+            <a id="sourceSignupLink" href="#" target="_blank" rel="noopener" style="font-size:12px;">Get a free key →</a>
+          </div>
+          <div class="parse-note">Stored only in this browser (localStorage) — never included in your Export backup, and never sent anywhere except directly to that provider's API.</div>
+        </div>
+
+        <div class="parse-note" id="sourceAttribution">Recipe data from <a href="https://www.themealdb.com/" target="_blank" rel="noopener">TheMealDB</a> — ingredient costs are still estimated locally, so review them after adding.</div>
         <div class="recipe-grid" id="mealSearchResults" style="margin-top:14px;"></div>
       </div>
 
@@ -1147,65 +1164,174 @@
     });
   }
 
-  // ---------- Online recipe discovery (TheMealDB) ----------
-  function mealToRecipe(meal){
+  // ---------- Online recipe discovery (multiple sources) ----------
+  var RECIPE_SOURCE_KEY_STORAGE = "ledger_recipe_source_keys_v1"; // kept separate from main export on purpose
+  var SOURCE_PROVIDERS = {
+    themealdb: { label:"TheMealDB", needsKey:false, fields:[], signupUrl:"https://www.themealdb.com/", supportsRandom:true,
+      attribution:'Recipe data from <a href="https://www.themealdb.com/" target="_blank" rel="noopener">TheMealDB</a> — ingredient costs are still estimated locally, so review them after adding.' },
+    spoonacular: { label:"Spoonacular", needsKey:true, fields:[{key:"apiKey",label:"API key"}], signupUrl:"https://spoonacular.com/food-api", supportsRandom:true,
+      attribution:'Recipe data from <a href="https://spoonacular.com/food-api" target="_blank" rel="noopener">Spoonacular</a> (free tier: 150 requests/day) — ingredient costs are still estimated locally.' },
+    edamam: { label:"Edamam", needsKey:true, fields:[{key:"appId",label:"App ID"},{key:"appKey",label:"App key"}], signupUrl:"https://www.edamam.com/", supportsRandom:false,
+      attribution:'Recipe data from <a href="https://www.edamam.com/" target="_blank" rel="noopener">Edamam</a> — instructions aren\'t provided by their API, so you\'ll get a link to the original recipe instead. Ingredient costs are still estimated locally.' }
+  };
+  function loadSourceKeys(){
+    try{ return JSON.parse(localStorage.getItem(RECIPE_SOURCE_KEY_STORAGE)) || {}; }catch(e){ return {}; }
+  }
+  function saveSourceKeys(keys){
+    try{ localStorage.setItem(RECIPE_SOURCE_KEY_STORAGE, JSON.stringify(keys)); }catch(e){ console.error("Couldn't save API key", e); }
+  }
+  function currentSource(){ return document.getElementById("mealSourceSelect").value; }
+  function stripHtml(s){ return (s||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(); }
+
+  function renderSourceKeyPanel(){
+    var source = currentSource();
+    var provider = SOURCE_PROVIDERS[source];
+    var panel = document.getElementById("sourceKeyPanel");
+    document.getElementById("sourceAttribution").innerHTML = provider.attribution;
+    document.getElementById("mealRandomBtn").style.display = provider.supportsRandom ? "" : "none";
+    if(!provider.needsKey){ panel.classList.add("hidden"); return; }
+    panel.classList.remove("hidden");
+    var keys = loadSourceKeys();
+    var saved = keys[source] || {};
+    document.getElementById("sourceKeyFields").innerHTML = provider.fields.map(function(f){
+      return '<div class="field"><label>'+esc(f.label)+'</label><input type="password" data-field="'+f.key+'" id="key_'+source+'_'+f.key+'" value="'+esc(saved[f.key]||"")+'"></div>';
+    }).join("");
+    document.getElementById("sourceSignupLink").href = provider.signupUrl;
+  }
+  document.getElementById("mealSourceSelect").addEventListener("change", function(){
+    renderSourceKeyPanel();
+    setMealSearchStatus("Pick a search term above, or hit Surprise me.");
+  });
+  document.getElementById("saveSourceKeyBtn").addEventListener("click", function(){
+    var source = currentSource();
+    var provider = SOURCE_PROVIDERS[source];
+    var keys = loadSourceKeys();
+    var entry = {};
+    provider.fields.forEach(function(f){
+      entry[f.key] = document.getElementById("key_"+source+"_"+f.key).value.trim();
+    });
+    keys[source] = entry;
+    saveSourceKeys(keys);
+    setMealSearchStatus("Key saved for "+provider.label+" — try a search.");
+  });
+
+  function setMealSearchStatus(msg){
+    document.getElementById("mealSearchResults").innerHTML = '<div class="empty" style="grid-column:1/-1;">'+esc(msg)+'</div>';
+  }
+
+  // Every source is adapted into this shape before rendering/importing:
+  // { title, image, meta, servings, ingredients:[{name,qty,unit}], instructions, sourceLabel, externalUrl }
+  function mealDBToUnified(meal){
     var ingredients = [];
     for(var i=1;i<=20;i++){
       var ing = (meal["strIngredient"+i]||"").trim();
       if(!ing) continue;
       var measure = (meal["strMeasure"+i]||"").trim();
       var line = (measure+" "+ing).trim();
-      var parsedLine = parseIngredientLine(line) || { id: uid(), name: ing, qty:1, unit:"", cost: estimateIngredientCost(ing,1) };
-      ingredients.push(parsedLine);
+      var p = parseIngredientLine(line) || { name: ing, qty:1, unit:"" };
+      ingredients.push({ name:p.name, qty:p.qty, unit:p.unit });
     }
-    return {
-      id: uid(), name: meal.strMeal, servings: 4, ingredients: ingredients,
-      instructions: meal.strInstructions || "", source: "TheMealDB", thumbnail: meal.strMealThumb || ""
-    };
+    return { title: meal.strMeal, image: meal.strMealThumb||"", meta: (meal.strArea||"")+(meal.strCategory?" · "+meal.strCategory:""),
+      servings: 4, ingredients: ingredients, instructions: meal.strInstructions||"", sourceLabel:"TheMealDB", externalUrl:null };
   }
-  function setMealSearchStatus(msg){
-    document.getElementById("mealSearchResults").innerHTML = '<div class="empty" style="grid-column:1/-1;">'+esc(msg)+'</div>';
+  function spoonacularToUnified(item){
+    var ingredients = (item.extendedIngredients||[]).map(function(ei){
+      return { name: ei.nameClean||ei.name||ei.originalName||"ingredient", qty: ei.amount||1, unit: ei.unit||"" };
+    });
+    return { title: item.title, image: item.image||"", meta: (item.cuisines&&item.cuisines[0])||(item.dishTypes&&item.dishTypes[0])||"",
+      servings: item.servings||4, ingredients: ingredients, instructions: stripHtml(item.instructions||""), sourceLabel:"Spoonacular", externalUrl: item.sourceUrl||null };
   }
-  function renderMealResults(meals){
+  function edamamToUnified(recipe){
+    var ingredients = (recipe.ingredientLines||[]).map(function(line){
+      var p = parseIngredientLine(line) || { name: line, qty:1, unit:"" };
+      return { name:p.name, qty:p.qty, unit:p.unit };
+    });
+    return { title: recipe.label, image: recipe.image||"", meta: (recipe.cuisineType&&recipe.cuisineType[0])||(recipe.mealType&&recipe.mealType[0])||"",
+      servings: recipe.yield||4, ingredients: ingredients, instructions: "", sourceLabel:"Edamam", externalUrl: recipe.url||null };
+  }
+
+  function renderMealResults(unifiedList, errorMsg){
     var el = document.getElementById("mealSearchResults");
-    if(!meals || meals.length===0){
+    if(errorMsg){ el.innerHTML = '<div class="empty" style="grid-column:1/-1;"><span class="big">Couldn\'t load results</span>'+esc(errorMsg)+'</div>'; return; }
+    if(!unifiedList || unifiedList.length===0){
       el.innerHTML = '<div class="empty" style="grid-column:1/-1;"><span class="big">No matches</span>Try a different search term.</div>';
       return;
     }
-    el.innerHTML = meals.map(function(m,idx){
+    el.innerHTML = unifiedList.map(function(m,idx){
       return '<div class="recipe-card">'+
-        (m.strMealThumb ? '<img src="'+m.strMealThumb+'" alt="'+esc(m.strMeal)+'" loading="lazy">' : '')+
-        '<h4>'+esc(m.strMeal)+'</h4>'+
-        '<div class="rc-meta">'+esc(m.strArea||"")+(m.strCategory ? " · "+esc(m.strCategory) : "")+'</div>'+
-        '<div class="rc-actions"><button class="btn small ghost" data-idx="'+idx+'" data-action="use-online">Use this recipe</button></div>'+
+        (m.image ? '<img src="'+m.image+'" alt="'+esc(m.title)+'" loading="lazy">' : '')+
+        '<h4>'+esc(m.title)+'</h4>'+
+        '<div class="rc-meta">'+esc(m.meta||m.sourceLabel)+'</div>'+
+        '<div class="rc-actions">'+
+          '<button class="btn small ghost" data-idx="'+idx+'" data-action="use-online">Use this recipe</button>'+
+          (m.externalUrl ? '<a href="'+m.externalUrl+'" target="_blank" rel="noopener" class="btn small ghost">View original</a>' : '')+
+        '</div>'+
       '</div>';
     }).join("");
     el.querySelectorAll('[data-action="use-online"]').forEach(function(btn){
       btn.addEventListener("click", function(){
-        var meal = meals[parseInt(btn.getAttribute("data-idx"),10)];
-        openRecipeModalFromMeal(meal);
+        openRecipeModalFromUnified(unifiedList[parseInt(btn.getAttribute("data-idx"),10)]);
       });
     });
   }
+
+  function searchThisSource(query){
+    var source = currentSource();
+    var keys = loadSourceKeys()[source] || {};
+    if(source==="themealdb"){
+      return fetch("https://www.themealdb.com/api/json/v1/1/search.php?s="+encodeURIComponent(query))
+        .then(function(r){ return r.json(); })
+        .then(function(data){ return (data.meals||[]).map(mealDBToUnified); });
+    }
+    if(source==="spoonacular"){
+      if(!keys.apiKey) return Promise.reject(new Error("Add your Spoonacular API key above first."));
+      var url = "https://api.spoonacular.com/recipes/complexSearch?number=9&addRecipeInformation=true&fillIngredients=true&query="+encodeURIComponent(query)+"&apiKey="+encodeURIComponent(keys.apiKey);
+      return fetch(url).then(function(r){ if(!r.ok) throw new Error("Spoonacular returned an error — check your API key and daily quota."); return r.json(); })
+        .then(function(data){ return (data.results||[]).map(spoonacularToUnified); });
+    }
+    if(source==="edamam"){
+      if(!keys.appId || !keys.appKey) return Promise.reject(new Error("Add your Edamam App ID and App key above first."));
+      var eurl = "https://api.edamam.com/api/recipes/v2?type=public&q="+encodeURIComponent(query)+"&app_id="+encodeURIComponent(keys.appId)+"&app_key="+encodeURIComponent(keys.appKey);
+      return fetch(eurl).then(function(r){ if(!r.ok) throw new Error("Edamam returned an error — check your App ID/App key and quota."); return r.json(); })
+        .then(function(data){ return (data.hits||[]).map(function(h){ return edamamToUnified(h.recipe); }); });
+    }
+    return Promise.resolve([]);
+  }
+  function randomFromThisSource(){
+    var source = currentSource();
+    var keys = loadSourceKeys()[source] || {};
+    if(source==="themealdb"){
+      return fetch("https://www.themealdb.com/api/json/v1/1/random.php")
+        .then(function(r){ return r.json(); })
+        .then(function(data){ return (data.meals||[]).map(mealDBToUnified); });
+    }
+    if(source==="spoonacular"){
+      if(!keys.apiKey) return Promise.reject(new Error("Add your Spoonacular API key above first."));
+      var url = "https://api.spoonacular.com/recipes/random?number=1&apiKey="+encodeURIComponent(keys.apiKey);
+      return fetch(url).then(function(r){ if(!r.ok) throw new Error("Spoonacular returned an error — check your API key and daily quota."); return r.json(); })
+        .then(function(data){ return (data.recipes||[]).map(spoonacularToUnified); });
+    }
+    return Promise.reject(new Error("This source doesn't support random picks — try a search instead."));
+  }
+
   function doMealSearch(){
     var q = document.getElementById("mealSearchInput").value.trim();
     if(!q){ return; }
     setMealSearchStatus("Searching…");
-    fetch("https://www.themealdb.com/api/json/v1/1/search.php?s="+encodeURIComponent(q))
-      .then(function(r){ return r.json(); })
-      .then(function(data){ renderMealResults(data.meals); })
-      .catch(function(err){ console.error(err); setMealSearchStatus("Couldn't reach the recipe database — check your connection and try again."); });
+    searchThisSource(q)
+      .then(function(results){ renderMealResults(results); })
+      .catch(function(err){ console.error(err); renderMealResults(null, err.message || "Check your connection and try again."); });
   }
   function doRandomMeal(){
     setMealSearchStatus("Finding something…");
-    fetch("https://www.themealdb.com/api/json/v1/1/random.php")
-      .then(function(r){ return r.json(); })
-      .then(function(data){ renderMealResults(data.meals); })
-      .catch(function(err){ console.error(err); setMealSearchStatus("Couldn't reach the recipe database — check your connection and try again."); });
+    randomFromThisSource()
+      .then(function(results){ renderMealResults(results); })
+      .catch(function(err){ console.error(err); renderMealResults(null, err.message || "Check your connection and try again."); });
   }
   document.getElementById("mealSearchBtn").addEventListener("click", doMealSearch);
   document.getElementById("mealRandomBtn").addEventListener("click", doRandomMeal);
   document.getElementById("mealSearchInput").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); doMealSearch(); } });
+  renderSourceKeyPanel();
 
   // ---------- Recipe Modal ----------
   var recipeModal = document.getElementById("recipeModal");
@@ -1228,21 +1354,26 @@
     recipeModal.classList.remove("hidden");
     document.getElementById("recipeName").focus();
   }
-  // Opens the editor pre-filled from an online search result, so ingredients/instructions
+  // Opens the editor pre-filled from an online search result (any source), so ingredients/instructions
   // can be reviewed and cost estimates checked before the person explicitly saves it.
-  function openRecipeModalFromMeal(meal){
-    var converted = mealToRecipe(meal);
+  function openRecipeModalFromUnified(unified){
+    var ingredients = unified.ingredients.map(function(i){
+      return { id: uid(), name: i.name, qty: i.qty||1, unit: i.unit||"", cost: estimateIngredientCost(i.name, i.qty||1) };
+    });
+    var instructions = unified.instructions && unified.instructions.trim()
+      ? unified.instructions.trim()
+      : (unified.externalUrl ? "Full instructions: "+unified.externalUrl : "");
     editingRecipeId = null;
     document.getElementById("recipeModalTitle").textContent = "Add recipe";
-    document.getElementById("recipeName").value = converted.name;
-    document.getElementById("recipeServings").value = converted.servings;
-    document.getElementById("recipeInstructions").value = converted.instructions;
+    document.getElementById("recipeName").value = unified.title || "";
+    document.getElementById("recipeServings").value = unified.servings || 4;
+    document.getElementById("recipeInstructions").value = instructions;
     document.getElementById("pasteText").value = "";
     document.getElementById("parsedPreview").innerHTML = "";
     document.getElementById("pdfStatus").textContent = "";
     parsedIngredients = [];
-    manualIngredients = converted.ingredients.map(function(i){ return Object.assign({},i); });
-    pendingImportMeta = { thumbnail: converted.thumbnail||null, source: converted.source||null };
+    manualIngredients = ingredients;
+    pendingImportMeta = { thumbnail: unified.image||null, source: unified.sourceLabel||null };
     setTab("manual");
     renderManualRows();
     updateRunningTotal();
