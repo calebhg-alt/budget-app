@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ledger — Personal Budget</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
     --paper:#FAFAF7;
@@ -416,9 +417,14 @@
     </div>
 
     <div class="tab-panel" id="tabPaste">
-      <textarea id="pasteText" placeholder="Paste one ingredient per line, e.g.&#10;2 lb ground turkey&#10;1 can black beans&#10;1 onion&#10;2 tbsp chili powder"></textarea>
-      <div class="parse-note">Estimates costs from typical U.S. grocery prices — review and adjust before saving.</div>
-      <button class="btn ghost small" id="parseTextBtn" style="margin-top:10px;">Parse ingredients</button>
+      <textarea id="pasteText" placeholder="Paste ingredients, or a whole recipe (title, ingredients, instructions) — e.g.&#10;2 lb ground turkey&#10;1 can black beans&#10;1 onion&#10;2 tbsp chili powder"></textarea>
+      <div class="parse-note">Estimates costs from typical U.S. grocery prices — review and adjust before saving. Works with a plain ingredient list or a full pasted recipe.</div>
+      <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+        <button class="btn ghost small" id="parseTextBtn">Parse ingredients</button>
+        <button class="btn ghost small" id="uploadPdfBtn">Upload PDF instead</button>
+        <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
+        <span id="pdfStatus" style="font-size:12px; color:var(--ink-soft);"></span>
+      </div>
       <div id="parsedPreview" style="margin-top:14px;"></div>
     </div>
 
@@ -456,6 +462,9 @@
   "use strict";
 
   var STORAGE_KEY = "ledger_budget_data_v1";
+  if(typeof pdfjsLib !== "undefined"){
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
   var EXPENSE_CATS = ["Housing","Food","Transportation","Utilities","Health","Entertainment","Shopping","Debt","Savings","Other"];
   var INCOME_CATS = ["Salary","Freelance","Gift","Investment","Other Income"];
   var CAT_COLORS = {
@@ -507,6 +516,39 @@
     var name = rest || clean;
     var cost = estimateIngredientCost(name, qty);
     return { id: uid(), name: name, qty: qty, unit: unit, cost: cost };
+  }
+
+  // Parses either a plain ingredient list OR a full recipe (title / servings / ingredients / instructions).
+  // Finds an "Ingredients" heading and stops at the next section heading, so pasted or PDF-extracted
+  // recipes don't pull instructions text in as ingredient rows.
+  var SECTION_END_RE = /^(instructions?|directions?|method|steps|preparation|notes|nutrition|nutritional info)\b/i;
+  function parseFullText(rawText){
+    var lines = rawText.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
+    var ingStart = lines.findIndex(function(l){ return /^ingredients?\b/i.test(l); });
+    var ingredientLines;
+    var detectedName = null;
+
+    if(ingStart > -1){
+      var ingEnd = lines.length;
+      for(var i=ingStart+1;i<lines.length;i++){ if(SECTION_END_RE.test(lines[i])){ ingEnd = i; break; } }
+      ingredientLines = lines.slice(ingStart+1, ingEnd);
+      for(var j=0;j<ingStart;j++){
+        var cand = lines[j];
+        if(cand.length>0 && cand.length<80 && !/serv(e|ing)s?/i.test(cand) && !/yield/i.test(cand)){ detectedName = cand; break; }
+      }
+    } else {
+      // No explicit heading — treat everything up to any instructions heading as ingredients (fallback: whole text).
+      var cut = lines.length;
+      for(var k=1;k<lines.length;k++){ if(SECTION_END_RE.test(lines[k])){ cut = k; break; } }
+      ingredientLines = lines.slice(0, cut);
+      if(lines.length>0 && lines[0].length<80) detectedName = lines[0];
+    }
+
+    var servingsMatch = rawText.match(/(?:serves|servings|yield[s]?)\s*[:\-]?\s*(\d+)/i);
+    var detectedServings = servingsMatch ? parseInt(servingsMatch[1],10) : null;
+
+    var parsed = ingredientLines.map(parseIngredientLine).filter(function(p){ return p && p.name && p.name.length>0 && p.name.length<80; });
+    return { name: detectedName, servings: detectedServings, ingredients: parsed };
   }
 
   function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -957,14 +999,6 @@
   // ---------- Utils ----------
   function esc(s){ var d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
 
-  // Close modals on backdrop click / Escape
-  [txnModal, goalModal, contribModal, recipeModal, logWeekModal].forEach(function(m){
-    m.addEventListener("click", function(e){ if(e.target===m) m.classList.add("hidden"); });
-  });
-  document.addEventListener("keydown", function(e){
-    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal].forEach(function(m){ m.classList.add("hidden"); }); }
-  });
-
   // ---------- Meal Prep: Recipe Library ----------
   var editingRecipeId = null;
   var manualIngredients = [];
@@ -1023,6 +1057,7 @@
     document.getElementById("recipeServings").value = r ? r.servings : 4;
     document.getElementById("pasteText").value = "";
     document.getElementById("parsedPreview").innerHTML = "";
+    document.getElementById("pdfStatus").textContent = "";
     parsedIngredients = [];
     manualIngredients = r ? r.ingredients.map(function(i){ return Object.assign({},i); }) : [];
     setTab("paste");
@@ -1049,10 +1084,65 @@
 
   document.getElementById("parseTextBtn").addEventListener("click", function(){
     var text = document.getElementById("pasteText").value;
-    var lines = text.split("\n").map(function(l){return l.trim();}).filter(Boolean);
-    parsedIngredients = lines.map(parseIngredientLine).filter(Boolean);
+    if(!text.trim()){ alert("Paste some ingredients or a recipe first."); return; }
+    var result = parseFullText(text);
+    parsedIngredients = result.ingredients;
+    applyDetectedFields(result);
     renderParsedPreview();
     updateRunningTotal();
+  });
+  function applyDetectedFields(result){
+    var nameEl = document.getElementById("recipeName");
+    var servEl = document.getElementById("recipeServings");
+    if(result.name && !nameEl.value.trim()) nameEl.value = result.name;
+    if(result.servings && (servEl.value==="" || servEl.value==="4")) servEl.value = result.servings;
+  }
+
+  // ---------- PDF upload ----------
+  document.getElementById("uploadPdfBtn").addEventListener("click", function(){
+    if(typeof pdfjsLib === "undefined"){
+      document.getElementById("pdfStatus").textContent = "Couldn't load the PDF reader (no internet access?) — try pasting the text instead.";
+      return;
+    }
+    document.getElementById("pdfFileInput").click();
+  });
+  document.getElementById("pdfFileInput").addEventListener("change", function(e){
+    var file = e.target.files[0];
+    if(!file) return;
+    var statusEl = document.getElementById("pdfStatus");
+    statusEl.textContent = "Reading " + file.name + "…";
+    var reader = new FileReader();
+    reader.onload = function(evt){
+      var typedArray = new Uint8Array(evt.target.result);
+      pdfjsLib.getDocument({ data: typedArray }).promise.then(function(pdf){
+        var pageTextPromises = [];
+        for(var p=1;p<=pdf.numPages;p++){
+          pageTextPromises.push(pdf.getPage(p).then(function(page){
+            return page.getTextContent().then(function(content){
+              return content.items.map(function(it){ return it.str; }).join(" ");
+            });
+          }));
+        }
+        return Promise.all(pageTextPromises);
+      }).then(function(pageTexts){
+        var fullText = pageTexts.join("\n");
+        document.getElementById("pasteText").value = fullText;
+        var result = parseFullText(fullText);
+        parsedIngredients = result.ingredients;
+        applyDetectedFields(result);
+        renderParsedPreview();
+        updateRunningTotal();
+        statusEl.textContent = parsedIngredients.length>0
+          ? "Found " + parsedIngredients.length + " ingredients — review below before saving."
+          : "Couldn't find a clear ingredients list in that PDF — check the text below or enter ingredients manually.";
+      }).catch(function(err){
+        console.error("PDF parse error", err);
+        statusEl.textContent = "Couldn't read that PDF (it may be a scanned image with no selectable text). Try pasting the text instead.";
+      });
+    };
+    reader.onerror = function(){ statusEl.textContent = "Couldn't read that file — try again."; };
+    reader.readAsArrayBuffer(file);
+    e.target.value = "";
   });
   function renderParsedPreview(){
     var el = document.getElementById("parsedPreview");
@@ -1216,6 +1306,14 @@
     state.transactions.push({ id: uid(), type:"expense", amount:amount, category:"Food", date: todayStr(), note:"Weekly meal plan groceries", createdAt: Date.now() });
     saveState(); logWeekModal.classList.add("hidden");
     renderDashboard();
+  });
+
+  // Close modals on backdrop click / Escape (all modal vars are defined by this point)
+  [txnModal, goalModal, contribModal, recipeModal, logWeekModal].forEach(function(m){
+    m.addEventListener("click", function(e){ if(e.target===m) m.classList.add("hidden"); });
+  });
+  document.addEventListener("keydown", function(e){
+    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal].forEach(function(m){ m.classList.add("hidden"); }); }
   });
 
   // ---------- Init ----------
