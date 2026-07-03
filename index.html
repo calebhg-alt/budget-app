@@ -192,6 +192,8 @@
   .meal-slot{ display:flex; flex-direction:column; gap:4px; }
   .meal-slot label{ font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); font-weight:600; }
   .meal-slot .slot-cost{ font-family:var(--mono); font-size:11px; color:var(--ink-soft); }
+  .mini-link{ background:none; border:none; padding:0; font-size:10.5px; color:var(--green); text-decoration:underline; cursor:pointer; font-weight:600; }
+  .mini-link:hover{ color:#155c45; }
   .day-card select{ width:100%; border:1px solid var(--rule-strong); border-radius:6px; padding:6px 8px; font-size:12.5px; }
   .day-card .day-cost{ font-family:var(--mono); font-size:13px; font-weight:600; margin-top:auto; padding-top:6px; border-top:1px solid var(--rule); }
   .chip{ display:inline-flex; align-items:center; gap:6px; background:var(--paper); border:1px solid var(--rule); border-radius:14px; padding:4px 6px 4px 12px; font-size:12px; font-weight:600; }
@@ -1903,6 +1905,10 @@
           '<label>'+esc(t)+'</label>'+
           '<select data-day-idx="'+dayIdx+'" data-type="'+esc(t)+'" class="day-select">'+opts+'</select>'+
           (r ? '<span class="slot-cost">'+fmt(recipeCost(r))+'</span>' : '')+
+          (r ? '<div style="display:flex; gap:8px; margin-top:2px;">'+
+            '<button type="button" class="mini-link" data-action="slot-ingredients" data-recipe-id="'+r.id+'">Ingredients</button>'+
+            (r.instructions ? '<button type="button" class="mini-link" data-action="slot-instructions" data-recipe-id="'+r.id+'">Instructions</button>' : '')+
+          '</div>' : '')+
         '</div>';
       }).join("");
       return '<div class="day-card">'+
@@ -1911,6 +1917,18 @@
         '<div class="day-cost">Day total: '+fmt(dayTotal)+'</div>'+
       '</div>';
     }).join("");
+    grid.querySelectorAll('[data-action="slot-ingredients"]').forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var recipe = state.recipes.find(function(x){return x.id===btn.getAttribute("data-recipe-id");});
+        if(recipe) openIngredientsModal(recipe);
+      });
+    });
+    grid.querySelectorAll('[data-action="slot-instructions"]').forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var recipe = state.recipes.find(function(x){return x.id===btn.getAttribute("data-recipe-id");});
+        if(recipe) openInstructionsModal(recipe);
+      });
+    });
     grid.querySelectorAll(".day-select").forEach(function(sel){
       sel.addEventListener("change", function(){
         var dayIdx = parseInt(sel.getAttribute("data-day-idx"));
