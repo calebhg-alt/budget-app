@@ -532,6 +532,17 @@
   </div>
 </div>
 
+<!-- Instructions Modal -->
+<div class="modal-backdrop hidden" id="instructionsModal">
+  <div class="modal" style="max-width:520px; max-height:80vh; overflow-y:auto;">
+    <h3 id="instructionsModalTitle">Instructions</h3>
+    <div id="instructionsModalBody" style="font-size:14px; color:var(--ink);"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="instructionsModalClose">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Log Week Confirm Modal -->
 <div class="modal-backdrop hidden" id="logWeekModal">
   <div class="modal">
@@ -1164,6 +1175,14 @@
 
   function recipeCost(r){ return r.ingredients.reduce(function(a,i){return a+(i.cost||0);},0); }
   function recipeMatchesMealType(r, type){ return !r.mealTypes || r.mealTypes.length===0 || r.mealTypes.indexOf(type)>-1; }
+  var instructionsModal = document.getElementById("instructionsModal");
+  function openInstructionsModal(r){
+    document.getElementById("instructionsModalTitle").textContent = r.name;
+    document.getElementById("instructionsModalBody").innerHTML = formatInstructionsHTML(r.instructions);
+    instructionsModal.classList.remove("hidden");
+  }
+  document.getElementById("instructionsModalClose").addEventListener("click", function(){ instructionsModal.classList.add("hidden"); });
+  instructionsModal.addEventListener("click", function(e){ if(e.target===instructionsModal) instructionsModal.classList.add("hidden"); });
   // Renders multi-line instructions as a numbered list (stripping any pre-existing numbering
   // like "1." or "1)" so steps don't get double-numbered); single-line text stays as plain prose.
   function formatInstructionsHTML(instructions){
@@ -1198,8 +1217,8 @@
         '<div class="rc-meta">'+r.ingredients.length+' ingredients · serves '+r.servings+' · '+fmt(perServe)+'/serving</div>'+
         (r.mealTypes && r.mealTypes.length ? '<div style="display:flex; gap:4px; flex-wrap:wrap;">'+r.mealTypes.map(function(t){ return '<span class="chip locked" style="font-size:10.5px; padding:2px 8px;">'+esc(t)+'</span>'; }).join("")+'</div>' : '')+
         '<div class="rc-cost">'+fmt(total)+'</div>'+
-        (r.instructions ? '<details><summary style="cursor:pointer; font-size:12px; color:var(--ink-soft); font-weight:600;">Instructions</summary><div style="font-size:13px; margin-top:8px; padding-top:8px; border-top:1px solid var(--rule); color:var(--ink); max-height:260px; overflow-y:auto; padding-right:6px;">'+formatInstructionsHTML(r.instructions)+'</div></details>' : '')+
         '<div class="rc-actions">'+
+          (r.instructions ? '<button class="btn small ghost" data-action="view-instructions" data-id="'+r.id+'">View instructions</button>' : '')+
           '<button class="btn small ghost" data-action="edit-recipe" data-id="'+r.id+'">Edit</button>'+
           '<button class="btn small danger" data-action="delete-recipe" data-id="'+r.id+'">Delete</button>'+
         '</div>'+
@@ -1208,7 +1227,8 @@
     grid.querySelectorAll("button[data-action]").forEach(function(btn){
       btn.addEventListener("click", function(){
         var id = btn.getAttribute("data-id");
-        if(btn.getAttribute("data-action")==="delete-recipe"){
+        var action = btn.getAttribute("data-action");
+        if(action==="delete-recipe"){
           if(confirm("Delete this recipe? It will be removed from any planned days.")){
             state.recipes = state.recipes.filter(function(r){return r.id!==id;});
             state.mealPlan.days.forEach(function(d){
@@ -1216,6 +1236,9 @@
             });
             saveState(); renderMealPrep();
           }
+        } else if(action==="view-instructions"){
+          var recipe = state.recipes.find(function(x){return x.id===id;});
+          if(recipe) openInstructionsModal(recipe);
         } else {
           var r = state.recipes.find(function(x){return x.id===id;});
           if(r) openRecipeModal(r);
@@ -2158,11 +2181,11 @@
   window.addEventListener("afterprint", function(){ document.body.classList.remove("printing-grocery"); });
 
   // Close modals on backdrop click / Escape (all modal vars are defined by this point)
-  [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal].forEach(function(m){
+  [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal].forEach(function(m){
     m.addEventListener("click", function(e){ if(e.target===m) m.classList.add("hidden"); });
   });
   document.addEventListener("keydown", function(e){
-    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal].forEach(function(m){ m.classList.add("hidden"); }); }
+    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal].forEach(function(m){ m.classList.add("hidden"); }); }
   });
 
   // ---------- Init ----------
