@@ -445,6 +445,11 @@
       <button class="btn ghost small" id="addIngRowBtn">+ Add ingredient</button>
     </div>
 
+    <div class="field" style="width:100%; margin-top:14px;">
+      <label>Instructions (optional)</label>
+      <textarea id="recipeInstructions" placeholder="Steps to make it — filled in automatically when pulled from a PDF, paste, or online search." style="width:100%; min-height:80px; border:1px solid var(--rule-strong); border-radius:6px; padding:10px; font-size:13px; resize:vertical;"></textarea>
+    </div>
+
     <div style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px; display:flex; justify-content:space-between; align-items:center;">
       <span style="font-size:13px; color:var(--ink-soft);">Estimated total cost</span>
       <span class="rc-cost" id="recipeRunningTotal">$0.00</span>
@@ -539,11 +544,13 @@
     var ingStart = lines.findIndex(function(l){ return /^ingredients?\b/i.test(l); });
     var ingredientLines;
     var detectedName = null;
+    var detectedInstructions = "";
 
     if(ingStart > -1){
       var ingEnd = lines.length;
       for(var i=ingStart+1;i<lines.length;i++){ if(SECTION_END_RE.test(lines[i])){ ingEnd = i; break; } }
       ingredientLines = lines.slice(ingStart+1, ingEnd);
+      if(ingEnd < lines.length) detectedInstructions = lines.slice(ingEnd+1).join("\n");
       for(var j=0;j<ingStart;j++){
         var cand = lines[j];
         if(cand.length>0 && cand.length<80 && !/serv(e|ing)s?/i.test(cand) && !/yield/i.test(cand)){ detectedName = cand; break; }
@@ -553,6 +560,7 @@
       var cut = lines.length;
       for(var k=1;k<lines.length;k++){ if(SECTION_END_RE.test(lines[k])){ cut = k; break; } }
       ingredientLines = lines.slice(0, cut);
+      if(cut < lines.length) detectedInstructions = lines.slice(cut+1).join("\n");
       if(lines.length>0 && lines[0].length<80) detectedName = lines[0];
     }
 
@@ -560,7 +568,7 @@
     var detectedServings = servingsMatch ? parseInt(servingsMatch[1],10) : null;
 
     var parsed = ingredientLines.map(parseIngredientLine).filter(function(p){ return p && p.name && p.name.length>0 && p.name.length<80; });
-    return { name: detectedName, servings: detectedServings, ingredients: parsed };
+    return { name: detectedName, servings: detectedServings, instructions: detectedInstructions, ingredients: parsed };
   }
 
   function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -1038,6 +1046,7 @@
         '<h4>'+esc(r.name)+'</h4>'+
         '<div class="rc-meta">'+r.ingredients.length+' ingredients · serves '+r.servings+' · '+fmt(perServe)+'/serving</div>'+
         '<div class="rc-cost">'+fmt(total)+'</div>'+
+        (r.instructions ? '<details><summary style="cursor:pointer; font-size:12px; color:var(--ink-soft);">Instructions</summary><div style="font-size:12.5px; margin-top:6px; white-space:pre-wrap; color:var(--ink);">'+esc(r.instructions)+'</div></details>' : '')+
         '<div class="rc-actions">'+
           '<button class="btn small ghost" data-action="edit-recipe" data-id="'+r.id+'">Edit</button>'+
           '<button class="btn small danger" data-action="delete-recipe" data-id="'+r.id+'">Delete</button>'+
@@ -1091,15 +1100,13 @@
         (m.strMealThumb ? '<img src="'+m.strMealThumb+'" alt="'+esc(m.strMeal)+'" loading="lazy">' : '')+
         '<h4>'+esc(m.strMeal)+'</h4>'+
         '<div class="rc-meta">'+esc(m.strArea||"")+(m.strCategory ? " · "+esc(m.strCategory) : "")+'</div>'+
-        '<div class="rc-actions"><button class="btn small ghost" data-idx="'+idx+'" data-action="add-online">Add to my recipes</button></div>'+
+        '<div class="rc-actions"><button class="btn small ghost" data-idx="'+idx+'" data-action="use-online">Use this recipe</button></div>'+
       '</div>';
     }).join("");
-    el.querySelectorAll('[data-action="add-online"]').forEach(function(btn){
+    el.querySelectorAll('[data-action="use-online"]').forEach(function(btn){
       btn.addEventListener("click", function(){
         var meal = meals[parseInt(btn.getAttribute("data-idx"),10)];
-        state.recipes.push(mealToRecipe(meal));
-        saveState(); renderRecipeGrid();
-        btn.textContent = "Added ✓"; btn.disabled = true;
+        openRecipeModalFromMeal(meal);
       });
     });
   }
@@ -1125,17 +1132,41 @@
 
   // ---------- Recipe Modal ----------
   var recipeModal = document.getElementById("recipeModal");
+  var pendingImportMeta = { thumbnail: null, source: null };
   function openRecipeModal(r){
     editingRecipeId = r ? r.id : null;
     document.getElementById("recipeModalTitle").textContent = r ? "Edit recipe" : "Add recipe";
     document.getElementById("recipeName").value = r ? r.name : "";
     document.getElementById("recipeServings").value = r ? r.servings : 4;
+    document.getElementById("recipeInstructions").value = r ? (r.instructions||"") : "";
     document.getElementById("pasteText").value = "";
     document.getElementById("parsedPreview").innerHTML = "";
     document.getElementById("pdfStatus").textContent = "";
     parsedIngredients = [];
     manualIngredients = r ? r.ingredients.map(function(i){ return Object.assign({},i); }) : [];
-    setTab("paste");
+    pendingImportMeta = { thumbnail: r ? (r.thumbnail||null) : null, source: r ? (r.source||null) : null };
+    setTab(r ? "manual" : "paste");
+    renderManualRows();
+    updateRunningTotal();
+    recipeModal.classList.remove("hidden");
+    document.getElementById("recipeName").focus();
+  }
+  // Opens the editor pre-filled from an online search result, so ingredients/instructions
+  // can be reviewed and cost estimates checked before the person explicitly saves it.
+  function openRecipeModalFromMeal(meal){
+    var converted = mealToRecipe(meal);
+    editingRecipeId = null;
+    document.getElementById("recipeModalTitle").textContent = "Add recipe";
+    document.getElementById("recipeName").value = converted.name;
+    document.getElementById("recipeServings").value = converted.servings;
+    document.getElementById("recipeInstructions").value = converted.instructions;
+    document.getElementById("pasteText").value = "";
+    document.getElementById("parsedPreview").innerHTML = "";
+    document.getElementById("pdfStatus").textContent = "";
+    parsedIngredients = [];
+    manualIngredients = converted.ingredients.map(function(i){ return Object.assign({},i); });
+    pendingImportMeta = { thumbnail: converted.thumbnail||null, source: converted.source||null };
+    setTab("manual");
     renderManualRows();
     updateRunningTotal();
     recipeModal.classList.remove("hidden");
@@ -1169,8 +1200,10 @@
   function applyDetectedFields(result){
     var nameEl = document.getElementById("recipeName");
     var servEl = document.getElementById("recipeServings");
+    var instrEl = document.getElementById("recipeInstructions");
     if(result.name && !nameEl.value.trim()) nameEl.value = result.name;
     if(result.servings && (servEl.value==="" || servEl.value==="4")) servEl.value = result.servings;
+    if(result.instructions && !instrEl.value.trim()) instrEl.value = result.instructions;
   }
 
   // ---------- PDF upload ----------
@@ -1280,15 +1313,19 @@
   document.getElementById("recipeSave").addEventListener("click", function(){
     var name = document.getElementById("recipeName").value.trim();
     var servings = parseInt(document.getElementById("recipeServings").value) || 1;
+    var instructions = document.getElementById("recipeInstructions").value.trim();
     var ingredients = (activeTab==="paste" ? parsedIngredients : manualIngredients).filter(function(i){ return i.name && i.name.trim(); });
     if(!name){ alert("Give the recipe a name."); return; }
     if(ingredients.length===0){ alert("Add at least one ingredient (paste and parse, or enter manually)."); return; }
     ingredients = ingredients.map(function(i){ return { id: i.id || uid(), name:i.name.trim(), qty:i.qty||1, unit:i.unit||"", cost: i.cost||0 }; });
     if(editingRecipeId){
       var r = state.recipes.find(function(x){return x.id===editingRecipeId;});
-      r.name=name; r.servings=servings; r.ingredients=ingredients;
+      r.name=name; r.servings=servings; r.ingredients=ingredients; r.instructions=instructions;
+      r.thumbnail = pendingImportMeta.thumbnail || r.thumbnail || null;
+      r.source = pendingImportMeta.source || r.source || null;
     } else {
-      state.recipes.push({ id: uid(), name:name, servings:servings, ingredients:ingredients });
+      state.recipes.push({ id: uid(), name:name, servings:servings, ingredients:ingredients, instructions:instructions,
+        thumbnail: pendingImportMeta.thumbnail||null, source: pendingImportMeta.source||null });
     }
     saveState(); closeRecipeModal(); renderMealPrep();
   });
