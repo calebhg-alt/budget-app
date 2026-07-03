@@ -374,6 +374,10 @@
       </div>
 
       <div class="section-title"><h3>Your recipes</h3></div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="field" style="flex:1; min-width:180px;"><label>Search</label><input type="text" id="recipeSearchInput" placeholder="Search by recipe name..."></div>
+        <div class="field"><label>Filter by meal type</label><select id="recipeTypeFilter"><option value="all">All</option></select></div>
+      </div>
       <div class="recipe-grid" id="recipeGrid"></div>
 
       <div class="section-title"><h3>This week's plan</h3></div>
@@ -1191,6 +1195,8 @@
   function recipeMatchesMealType(r, type){ return !r.mealTypes || r.mealTypes.length===0 || r.mealTypes.indexOf(type)>-1; }
   var instructionsModal = document.getElementById("instructionsModal");
   var ingredientsModal = document.getElementById("ingredientsModal");
+  document.getElementById("recipeSearchInput").addEventListener("input", renderRecipeGrid);
+  document.getElementById("recipeTypeFilter").addEventListener("change", renderRecipeGrid);
   function openIngredientsModal(r){
     document.getElementById("ingredientsModalTitle").textContent = r.name;
     var rows = r.ingredients.map(function(i){
@@ -1230,13 +1236,31 @@
     renderWeekGrid();
   }
 
+  function refreshRecipeTypeFilterOptions(){
+    var sel = document.getElementById("recipeTypeFilter");
+    var prev = sel.value || "all";
+    sel.innerHTML = '<option value="all">All</option>' + state.mealPlan.mealTypes.map(function(t){ return '<option value="'+esc(t)+'">'+esc(t)+'</option>'; }).join("");
+    sel.value = (prev==="all" || state.mealPlan.mealTypes.indexOf(prev)>-1) ? prev : "all";
+  }
   function renderRecipeGrid(){
+    refreshRecipeTypeFilterOptions();
     var grid = document.getElementById("recipeGrid");
     if(state.recipes.length===0){
       grid.innerHTML = '<div class="empty" style="grid-column:1/-1;"><span class="big">No recipes yet</span>Add one by pasting an ingredient list or entering it manually.</div>';
       return;
     }
-    grid.innerHTML = state.recipes.map(function(r){
+    var searchTerm = (document.getElementById("recipeSearchInput").value||"").trim().toLowerCase();
+    var typeFilter = document.getElementById("recipeTypeFilter").value;
+    var filtered = state.recipes.filter(function(r){
+      var matchesSearch = !searchTerm || r.name.toLowerCase().indexOf(searchTerm)>-1;
+      var matchesType = typeFilter==="all" || recipeMatchesMealType(r, typeFilter);
+      return matchesSearch && matchesType;
+    });
+    if(filtered.length===0){
+      grid.innerHTML = '<div class="empty" style="grid-column:1/-1;"><span class="big">No matches</span>Try a different search term or meal type.</div>';
+      return;
+    }
+    grid.innerHTML = filtered.map(function(r){
       var total = recipeCost(r);
       var perServe = r.servings>0 ? total/r.servings : total;
       return '<div class="recipe-card">'+
