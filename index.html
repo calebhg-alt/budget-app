@@ -186,10 +186,17 @@
   textarea#pasteText{ width:100%; min-height:110px; border:1px solid var(--rule-strong); border-radius:6px; padding:10px; font-family:var(--mono); font-size:12.5px; resize:vertical; }
   .week-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:10px; margin-top:16px; }
   @media(max-width:900px){ .week-grid{ grid-template-columns:repeat(2,1fr); } }
-  .day-card{ border:1px solid var(--rule); border-radius:10px; padding:12px; background:var(--paper-raised); display:flex; flex-direction:column; gap:8px; min-height:150px; }
+  .day-card{ border:1px solid var(--rule); border-radius:10px; padding:12px; background:var(--paper-raised); display:flex; flex-direction:column; gap:10px; min-height:150px; }
   .day-card .day-label{ font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--ink-soft); font-weight:700; }
+  .meal-slot{ display:flex; flex-direction:column; gap:4px; }
+  .meal-slot label{ font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); font-weight:600; }
+  .meal-slot .slot-cost{ font-family:var(--mono); font-size:11px; color:var(--ink-soft); }
   .day-card select{ width:100%; border:1px solid var(--rule-strong); border-radius:6px; padding:6px 8px; font-size:12.5px; }
-  .day-card .day-cost{ font-family:var(--mono); font-size:13px; font-weight:600; margin-top:auto; }
+  .day-card .day-cost{ font-family:var(--mono); font-size:13px; font-weight:600; margin-top:auto; padding-top:6px; border-top:1px solid var(--rule); }
+  .chip{ display:inline-flex; align-items:center; gap:6px; background:var(--paper); border:1px solid var(--rule); border-radius:14px; padding:4px 6px 4px 12px; font-size:12px; font-weight:600; }
+  .chip button{ background:none; border:none; color:var(--ink-soft); font-size:15px; line-height:1; padding:2px 6px; border-radius:50%; }
+  .chip button:hover{ color:var(--clay); background:var(--clay-soft); }
+  .chip.locked{ padding-right:12px; }
   .budget-summary{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin:16px 0; }
   .budget-summary .field{ min-width:160px; }
   .parse-note{ font-size:12px; color:var(--ink-soft); margin-top:8px; line-height:1.5; }
@@ -342,6 +349,13 @@
           <button class="btn ghost" id="suggestPlanBtn">Suggest a week</button>
           <button class="btn ghost" id="clearPlanBtn">Clear plan</button>
         </div>
+
+        <div class="form-row" style="margin-bottom:8px;">
+          <div class="field"><label>Add a meal type</label><input type="text" id="newMealTypeInput" placeholder="e.g. Snack"></div>
+          <button class="btn ghost small" id="addMealTypeBtn">+ Add</button>
+        </div>
+        <div id="mealTypeChips" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px;"></div>
+
         <div class="week-grid" id="weekGrid"></div>
         <div style="margin-top:18px;">
           <div class="bi-head" style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
@@ -490,6 +504,29 @@
     "Savings":"#2F8FB3","Other":"#8A8A82"
   };
   var DAY_NAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  var DEFAULT_MEAL_TYPES = ["Breakfast","Lunch","Dinner"];
+  function defaultMealPlan(){
+    return { weeklyBudget: 0, mealTypes: DEFAULT_MEAL_TYPES.slice(), days: DAY_NAMES.map(function(d){
+      var meals = {}; DEFAULT_MEAL_TYPES.forEach(function(t){ meals[t]=null; });
+      return { day:d, meals: meals };
+    }) };
+  }
+  // Handles old saves (single recipeId per day) and backfills any meal types added after a plan was created.
+  function normalizeMealPlan(mp){
+    if(!mp.mealTypes || mp.mealTypes.length===0) mp.mealTypes = DEFAULT_MEAL_TYPES.slice();
+    mp.days.forEach(function(d){
+      if(!d.meals){
+        var oldId = d.recipeId || null;
+        d.meals = {};
+        mp.mealTypes.forEach(function(t){ d.meals[t]=null; });
+        if(oldId) d.meals[mp.mealTypes[mp.mealTypes.length-1]] = oldId;
+        delete d.recipeId;
+      } else {
+        mp.mealTypes.forEach(function(t){ if(!(t in d.meals)) d.meals[t]=null; });
+      }
+    });
+    return mp;
+  }
   var UNIT_WORDS = ["lb","lbs","pound","pounds","oz","ounce","ounces","cup","cups","tbsp","tablespoon","tablespoons",
     "tsp","teaspoon","teaspoons","can","cans","cloves","clove","bunch","bunches","package","packages","pkg",
     "slice","slices","g","kg","ml","l","dozen","head","heads","stalk","stalks","jar","jars","bag","bags","pint","quart"];
@@ -597,11 +634,11 @@
         var parsed = JSON.parse(raw);
         parsed.transactions = parsed.transactions || []; parsed.budgets = parsed.budgets || {}; parsed.goals = parsed.goals || [];
         parsed.recipes = parsed.recipes || [];
-        parsed.mealPlan = parsed.mealPlan || { weeklyBudget: 0, days: DAY_NAMES.map(function(d){ return {day:d, recipeId:null}; }) };
+        parsed.mealPlan = normalizeMealPlan(parsed.mealPlan || defaultMealPlan());
         return parsed;
       }
     }catch(e){ console.error("Failed to load data", e); }
-    return { transactions: [], budgets: {}, goals: [], recipes: [], mealPlan: { weeklyBudget: 0, days: DAY_NAMES.map(function(d){ return {day:d, recipeId:null}; }) } };
+    return { transactions: [], budgets: {}, goals: [], recipes: [], mealPlan: defaultMealPlan() };
   }
   function saveState(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -1059,7 +1096,9 @@
         if(btn.getAttribute("data-action")==="delete-recipe"){
           if(confirm("Delete this recipe? It will be removed from any planned days.")){
             state.recipes = state.recipes.filter(function(r){return r.id!==id;});
-            state.mealPlan.days.forEach(function(d){ if(d.recipeId===id) d.recipeId=null; });
+            state.mealPlan.days.forEach(function(d){
+              state.mealPlan.mealTypes.forEach(function(t){ if(d.meals[t]===id) d.meals[t]=null; });
+            });
             saveState(); renderMealPrep();
           }
         } else {
@@ -1331,35 +1370,85 @@
   });
 
   // ---------- Weekly Plan ----------
+  function weekPlanTotal(){
+    var total = 0;
+    state.mealPlan.days.forEach(function(d){
+      state.mealPlan.mealTypes.forEach(function(t){
+        var r = state.recipes.find(function(x){return x.id===d.meals[t];});
+        if(r) total += recipeCost(r);
+      });
+    });
+    return total;
+  }
+
+  function renderMealTypeChips(){
+    var el = document.getElementById("mealTypeChips");
+    el.innerHTML = state.mealPlan.mealTypes.map(function(t){
+      var removable = state.mealPlan.mealTypes.length>1;
+      return '<span class="chip'+(removable?"":" locked")+'">'+esc(t)+(removable ? ' <button type="button" data-type="'+esc(t)+'" aria-label="Remove '+esc(t)+'">×</button>' : '')+'</span>';
+    }).join("");
+    el.querySelectorAll("button[data-type]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var type = btn.getAttribute("data-type");
+        if(!confirm('Remove "'+type+'" from every day\'s plan?')) return;
+        state.mealPlan.mealTypes = state.mealPlan.mealTypes.filter(function(t){return t!==type;});
+        state.mealPlan.days.forEach(function(d){ delete d.meals[type]; });
+        saveState(); renderWeekGrid();
+      });
+    });
+  }
+  document.getElementById("addMealTypeBtn").addEventListener("click", function(){
+    var input = document.getElementById("newMealTypeInput");
+    var name = input.value.trim();
+    if(!name){ return; }
+    var exists = state.mealPlan.mealTypes.some(function(t){ return t.toLowerCase()===name.toLowerCase(); });
+    if(exists){ alert('"'+name+'" is already a meal type.'); return; }
+    state.mealPlan.mealTypes.push(name);
+    state.mealPlan.days.forEach(function(d){ d.meals[name] = null; });
+    input.value = "";
+    saveState(); renderWeekGrid();
+  });
+  document.getElementById("newMealTypeInput").addEventListener("keydown", function(e){
+    if(e.key==="Enter"){ e.preventDefault(); document.getElementById("addMealTypeBtn").click(); }
+  });
+
   function renderWeekGrid(){
     var input = document.getElementById("weeklyBudgetInput");
     if(document.activeElement!==input) input.value = state.mealPlan.weeklyBudget || "";
+    renderMealTypeChips();
     var grid = document.getElementById("weekGrid");
-    grid.innerHTML = state.mealPlan.days.map(function(d,idx){
-      var r = state.recipes.find(function(x){return x.id===d.recipeId;});
-      var opts = '<option value="">— no meal —</option>' + state.recipes.map(function(rr){
-        return '<option value="'+rr.id+'" '+(rr.id===d.recipeId?"selected":"")+'>'+esc(rr.name)+' ('+fmt(recipeCost(rr))+')</option>';
+    grid.innerHTML = state.mealPlan.days.map(function(d,dayIdx){
+      var dayTotal = 0;
+      var slots = state.mealPlan.mealTypes.map(function(t){
+        var r = state.recipes.find(function(x){return x.id===d.meals[t];});
+        if(r) dayTotal += recipeCost(r);
+        var opts = '<option value="">— no meal —</option>' + state.recipes.map(function(rr){
+          return '<option value="'+rr.id+'" '+(rr.id===d.meals[t]?"selected":"")+'>'+esc(rr.name)+' ('+fmt(recipeCost(rr))+')</option>';
+        }).join("");
+        return '<div class="meal-slot">'+
+          '<label>'+esc(t)+'</label>'+
+          '<select data-day-idx="'+dayIdx+'" data-type="'+esc(t)+'" class="day-select">'+opts+'</select>'+
+          (r ? '<span class="slot-cost">'+fmt(recipeCost(r))+'</span>' : '')+
+        '</div>';
       }).join("");
       return '<div class="day-card">'+
         '<div class="day-label">'+d.day+'</div>'+
-        '<select data-idx="'+idx+'" class="day-select">'+opts+'</select>'+
-        '<div class="day-cost">'+(r ? fmt(recipeCost(r)) : "—")+'</div>'+
+        slots+
+        '<div class="day-cost">Day total: '+fmt(dayTotal)+'</div>'+
       '</div>';
     }).join("");
     grid.querySelectorAll(".day-select").forEach(function(sel){
       sel.addEventListener("change", function(){
-        var idx = parseInt(sel.getAttribute("data-idx"));
-        state.mealPlan.days[idx].recipeId = sel.value || null;
+        var dayIdx = parseInt(sel.getAttribute("data-day-idx"));
+        var type = sel.getAttribute("data-type");
+        state.mealPlan.days[dayIdx].meals[type] = sel.value || null;
         saveState(); renderWeekGrid();
       });
     });
     updateWeekTotal();
   }
   function updateWeekTotal(){
-    var total = state.mealPlan.days.reduce(function(a,d){
-      var r = state.recipes.find(function(x){return x.id===d.recipeId;});
-      return a + (r ? recipeCost(r) : 0);
-    },0);
+    var total = weekPlanTotal();
     var budget = state.mealPlan.weeklyBudget || 0;
     document.getElementById("weekTotalNums").textContent = budget>0 ? fmt(total)+" / "+fmt(budget) : fmt(total)+" (no budget set)";
     var pct = budget>0 ? (total/budget)*100 : 0;
@@ -1374,7 +1463,7 @@
   });
   document.getElementById("clearPlanBtn").addEventListener("click", function(){
     if(!confirm("Clear all meals from this week's plan?")) return;
-    state.mealPlan.days.forEach(function(d){ d.recipeId=null; });
+    state.mealPlan.days.forEach(function(d){ state.mealPlan.mealTypes.forEach(function(t){ d.meals[t]=null; }); });
     saveState(); renderWeekGrid();
   });
 
@@ -1383,29 +1472,26 @@
     var budget = state.mealPlan.weeklyBudget || 0;
     var sorted = state.recipes.slice().sort(function(a,b){ return recipeCost(a)-recipeCost(b); });
     var shuffled = sorted.slice().sort(function(){ return Math.random()-0.5; });
-    var plan = []; var total = 0;
-    for(var i=0;i<7;i++){
-      var candidate = shuffled[i % shuffled.length];
-      var candCost = recipeCost(candidate);
-      if(budget>0 && total+candCost > budget){
-        // fall back to cheapest recipe that still fits, else cheapest overall
-        var fits = sorted.filter(function(r){ return total+recipeCost(r) <= budget; });
-        candidate = fits.length>0 ? fits[0] : sorted[0];
-        candCost = recipeCost(candidate);
-      }
-      plan.push(candidate.id);
-      total += candCost;
-    }
-    state.mealPlan.days.forEach(function(d,idx){ d.recipeId = plan[idx]; });
+    var total = 0; var shuffleIdx = 0;
+    state.mealPlan.days.forEach(function(d){
+      state.mealPlan.mealTypes.forEach(function(t){
+        var candidate = shuffled[shuffleIdx % shuffled.length]; shuffleIdx++;
+        var candCost = recipeCost(candidate);
+        if(budget>0 && total+candCost > budget){
+          var fits = sorted.filter(function(r){ return total+recipeCost(r) <= budget; });
+          candidate = fits.length>0 ? fits[0] : sorted[0];
+          candCost = recipeCost(candidate);
+        }
+        d.meals[t] = candidate.id;
+        total += candCost;
+      });
+    });
     saveState(); renderWeekGrid();
   });
 
   var logWeekModal = document.getElementById("logWeekModal");
   document.getElementById("logWeekBtn").addEventListener("click", function(){
-    var total = state.mealPlan.days.reduce(function(a,d){
-      var r = state.recipes.find(function(x){return x.id===d.recipeId;});
-      return a + (r ? recipeCost(r) : 0);
-    },0);
+    var total = weekPlanTotal();
     if(total<=0){ alert("This week's plan doesn't have a cost yet — add some meals first."); return; }
     document.getElementById("logWeekAmount").textContent = fmt(total);
     logWeekModal.dataset.amount = total;
