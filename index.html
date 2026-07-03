@@ -87,7 +87,7 @@
   .section-title h3{ margin:0; font-size:15px; font-weight:700; }
   .btn{
     background:var(--ink); color:var(--paper); border:none; border-radius:6px; padding:9px 16px;
-    font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:6px;
+    font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:6px; text-decoration:none;
   }
   .btn:hover{ background:#000; }
   .btn.ghost{ background:none; border:1px solid var(--rule-strong); color:var(--ink); }
@@ -549,6 +549,27 @@
   <div class="modal" style="max-width:480px; max-height:82vh; overflow-y:auto;">
     <h3>Grocery list</h3>
     <div id="groceryListBody"></div>
+
+    <div style="margin-top:18px; border-top:1px solid var(--rule); padding-top:14px;">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <button class="btn ghost small" id="instacartBtn">Shop with Instacart</button>
+        <span id="instacartStatus" style="font-size:12px; color:var(--ink-soft);"></span>
+      </div>
+      <div id="instacartKeyPanel" class="hidden" style="background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:12px; margin-top:10px;">
+        <div class="form-row">
+          <div class="field"><label>API key</label><input type="password" id="instacartApiKey"></div>
+          <div class="field"><label>Environment</label>
+            <select id="instacartEnv"><option value="production">Production</option><option value="development">Development</option></select>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap;">
+          <button class="btn ghost small" id="saveInstacartKeyBtn">Save key</button>
+          <a href="https://docs.instacart.com/developer_platform_api/get_started/overview" target="_blank" rel="noopener" style="font-size:12px;">Apply for API access →</a>
+        </div>
+        <div class="parse-note">Instacart's API key isn't instant — it's an application process (roughly 30-40 days per their docs), unlike the free instant keys for Spoonacular/Edamam. Stored only in this browser, never in your Export backup.</div>
+      </div>
+    </div>
+
     <div class="modal-actions" style="justify-content:space-between;">
       <div style="display:flex; gap:8px;">
         <button class="btn ghost small" id="groceryDownloadBtn">Download .txt</button>
@@ -1977,7 +1998,8 @@
         var qtyStr = (Math.round(g.subUnits[u]*100)/100).toString();
         return u ? (qtyStr+" "+u) : qtyStr;
       }).join(" + ");
-      var item = { name: g.displayName, amount: amount, cost: g.totalCost, section: g.section };
+      var units = Object.keys(g.subUnits).map(function(u){ return { unit: u, qty: Math.round(g.subUnits[u]*100)/100 }; });
+      var item = { name: g.displayName, amount: amount, cost: g.totalCost, section: g.section, units: units };
       if(!sections[g.section]) sections[g.section] = [];
       sections[g.section].push(item);
     });
@@ -1998,7 +2020,7 @@
       return '<div class="grocery-section"><h4>'+esc(section)+'</h4>' +
         sections[section].map(function(item){
           total += item.cost;
-          return '<div class="grocery-item"><label><input type="checkbox" class="grocery-check">'+esc(item.name)+'</label><span class="amt">'+esc(item.amount)+'</span></div>';
+          return '<div class="grocery-item"><label><input type="checkbox" class="grocery-check">'+esc(item.name)+'</label><span class="amt">'+esc(item.amount)+'</span><a href="https://www.walmart.com/search?q='+encodeURIComponent(item.name)+'" target="_blank" rel="noopener" class="btn ghost small" style="padding:3px 8px; font-size:11px;">Walmart</a></div>';
         }).join("") +
       '</div>';
     }).join("");
@@ -2013,6 +2035,71 @@
   });
   document.getElementById("groceryListClose").addEventListener("click", function(){ groceryListModal.classList.add("hidden"); });
   groceryListModal.addEventListener("click", function(e){ if(e.target===groceryListModal) groceryListModal.classList.add("hidden"); });
+
+  // ---------- Shop with Instacart ----------
+  // Instacart's Developer Platform API generates a shoppable link — the shopper picks a store
+  // (which may include Walmart, depending on their area) and adds everything to a cart there.
+  // Note: this requires an approved API key from Instacart (an application process, not instant),
+  // and calling their API directly from a browser may or may not work depending on their CORS policy —
+  // this hasn't been confirmed either way, so a clear error is shown if the request fails.
+  var INSTACART_KEY_STORAGE = "ledger_instacart_key_v1";
+  var INSTACART_UNIT_MAP = {
+    "oz":"ounce","lb":"pound","g":"gram","kg":"kilogram","ml":"milliliter","l":"liter",
+    "cup":"cup","tbsp":"tablespoon","tsp":"teaspoon","can":"can","clove":"clove","slice":"slice",
+    "bunch":"bunch","package":"package","jar":"jar","bag":"bag","head":"head","stalk":"stalk",
+    "pint":"pint","quart":"quart","dozen":"count"
+  };
+  function loadInstacartKey(){
+    try{ return JSON.parse(localStorage.getItem(INSTACART_KEY_STORAGE)) || {}; }catch(e){ return {}; }
+  }
+  function saveInstacartKey(obj){
+    try{ localStorage.setItem(INSTACART_KEY_STORAGE, JSON.stringify(obj)); }catch(e){ console.error("Couldn't save Instacart key", e); }
+  }
+  document.getElementById("saveInstacartKeyBtn").addEventListener("click", function(){
+    saveInstacartKey({ apiKey: document.getElementById("instacartApiKey").value.trim(), env: document.getElementById("instacartEnv").value });
+    document.getElementById("instacartStatus").textContent = "Key saved — click Shop with Instacart to try it.";
+  });
+  document.getElementById("instacartBtn").addEventListener("click", function(){
+    var saved = loadInstacartKey();
+    var statusEl = document.getElementById("instacartStatus");
+    var panel = document.getElementById("instacartKeyPanel");
+    if(!saved.apiKey){
+      panel.classList.remove("hidden");
+      document.getElementById("instacartEnv").value = saved.env || "production";
+      statusEl.textContent = "Add your Instacart API key to continue.";
+      return;
+    }
+    var sections = buildGroceryList();
+    var lineItems = [];
+    Object.keys(sections).forEach(function(s){
+      sections[s].forEach(function(item){
+        var li = { name: item.name };
+        if(item.units && item.units.length>0){
+          li.measurements = [{ quantity: item.units[0].qty, unit: INSTACART_UNIT_MAP[item.units[0].unit] || item.units[0].unit || "each" }];
+        }
+        lineItems.push(li);
+      });
+    });
+    if(lineItems.length===0){ statusEl.textContent = "Nothing planned yet — assign recipes in the week grid first."; return; }
+    statusEl.textContent = "Sending your list to Instacart…";
+    var base = saved.env==="development" ? "https://connect.dev.instacart.tools" : "https://connect.instacart.com";
+    fetch(base+"/idp/v1/products/recipe", {
+      method: "POST",
+      headers: { "Content-Type":"application/json", "Accept":"application/json", "Authorization":"Bearer "+saved.apiKey },
+      body: JSON.stringify({ title: "Grocery list — "+todayStr(), ingredients: lineItems })
+    }).then(function(r){
+      if(!r.ok) throw new Error("Instacart returned an error (status "+r.status+") — check your API key and that it's approved for this endpoint.");
+      return r.json();
+    }).then(function(data){
+      var url = data.products_link_url || (data.data && data.data.products_link_url);
+      if(!url) throw new Error("Instacart didn't return a shoppable link.");
+      statusEl.textContent = "Opening your Instacart list…";
+      window.open(url, "_blank");
+    }).catch(function(err){
+      console.error(err);
+      statusEl.textContent = (err.message || "Couldn't reach Instacart") + " — the Walmart links above always work as a fallback.";
+    });
+  });
 
   document.getElementById("groceryDownloadBtn").addEventListener("click", function(){
     var sections = buildGroceryList();
