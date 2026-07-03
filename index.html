@@ -170,6 +170,7 @@
   /* ---------- Meal Prep ---------- */
   .recipe-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; margin-top:16px; }
   .recipe-card{ border:1px solid var(--rule); border-radius:10px; padding:16px; background:var(--paper-raised); display:flex; flex-direction:column; gap:8px; }
+  .recipe-card img{ width:100%; height:120px; object-fit:cover; border-radius:8px; margin-bottom:2px; }
   .recipe-card h4{ margin:0; font-size:14.5px; }
   .recipe-card .rc-meta{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); }
   .recipe-card .rc-cost{ font-family:var(--mono); font-weight:700; font-size:16px; }
@@ -320,7 +321,18 @@
         <button class="btn" id="addRecipeBtn">+ Add recipe</button>
       </div>
 
-      <div class="section-title" style="margin-top:0;"><h3>Recipe library</h3></div>
+      <div class="section-title" style="margin-top:0;"><h3>Discover recipes online</h3></div>
+      <div class="card">
+        <div class="form-row">
+          <div class="field" style="flex:1; min-width:200px;"><label>Search by dish name</label><input type="text" id="mealSearchInput" placeholder="e.g. chicken curry, lasagna, tacos"></div>
+          <button class="btn ghost small" id="mealSearchBtn">Search</button>
+          <button class="btn ghost small" id="mealRandomBtn">Surprise me</button>
+        </div>
+        <div class="parse-note">Recipe data from <a href="https://www.themealdb.com/" target="_blank" rel="noopener">TheMealDB</a> — ingredient costs are still estimated locally, so review them after adding.</div>
+        <div class="recipe-grid" id="mealSearchResults" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="section-title"><h3>Your recipes</h3></div>
       <div class="recipe-grid" id="recipeGrid"></div>
 
       <div class="section-title"><h3>This week's plan</h3></div>
@@ -1022,6 +1034,7 @@
       var total = recipeCost(r);
       var perServe = r.servings>0 ? total/r.servings : total;
       return '<div class="recipe-card">'+
+        (r.thumbnail ? '<img src="'+r.thumbnail+'" alt="'+esc(r.name)+'" loading="lazy">' : '')+
         '<h4>'+esc(r.name)+'</h4>'+
         '<div class="rc-meta">'+r.ingredients.length+' ingredients · serves '+r.servings+' · '+fmt(perServe)+'/serving</div>'+
         '<div class="rc-cost">'+fmt(total)+'</div>'+
@@ -1047,6 +1060,68 @@
       });
     });
   }
+
+  // ---------- Online recipe discovery (TheMealDB) ----------
+  function mealToRecipe(meal){
+    var ingredients = [];
+    for(var i=1;i<=20;i++){
+      var ing = (meal["strIngredient"+i]||"").trim();
+      if(!ing) continue;
+      var measure = (meal["strMeasure"+i]||"").trim();
+      var line = (measure+" "+ing).trim();
+      var parsedLine = parseIngredientLine(line) || { id: uid(), name: ing, qty:1, unit:"", cost: estimateIngredientCost(ing,1) };
+      ingredients.push(parsedLine);
+    }
+    return {
+      id: uid(), name: meal.strMeal, servings: 4, ingredients: ingredients,
+      instructions: meal.strInstructions || "", source: "TheMealDB", thumbnail: meal.strMealThumb || ""
+    };
+  }
+  function setMealSearchStatus(msg){
+    document.getElementById("mealSearchResults").innerHTML = '<div class="empty" style="grid-column:1/-1;">'+esc(msg)+'</div>';
+  }
+  function renderMealResults(meals){
+    var el = document.getElementById("mealSearchResults");
+    if(!meals || meals.length===0){
+      el.innerHTML = '<div class="empty" style="grid-column:1/-1;"><span class="big">No matches</span>Try a different search term.</div>';
+      return;
+    }
+    el.innerHTML = meals.map(function(m,idx){
+      return '<div class="recipe-card">'+
+        (m.strMealThumb ? '<img src="'+m.strMealThumb+'" alt="'+esc(m.strMeal)+'" loading="lazy">' : '')+
+        '<h4>'+esc(m.strMeal)+'</h4>'+
+        '<div class="rc-meta">'+esc(m.strArea||"")+(m.strCategory ? " · "+esc(m.strCategory) : "")+'</div>'+
+        '<div class="rc-actions"><button class="btn small ghost" data-idx="'+idx+'" data-action="add-online">Add to my recipes</button></div>'+
+      '</div>';
+    }).join("");
+    el.querySelectorAll('[data-action="add-online"]').forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var meal = meals[parseInt(btn.getAttribute("data-idx"),10)];
+        state.recipes.push(mealToRecipe(meal));
+        saveState(); renderRecipeGrid();
+        btn.textContent = "Added ✓"; btn.disabled = true;
+      });
+    });
+  }
+  function doMealSearch(){
+    var q = document.getElementById("mealSearchInput").value.trim();
+    if(!q){ return; }
+    setMealSearchStatus("Searching…");
+    fetch("https://www.themealdb.com/api/json/v1/1/search.php?s="+encodeURIComponent(q))
+      .then(function(r){ return r.json(); })
+      .then(function(data){ renderMealResults(data.meals); })
+      .catch(function(err){ console.error(err); setMealSearchStatus("Couldn't reach the recipe database — check your connection and try again."); });
+  }
+  function doRandomMeal(){
+    setMealSearchStatus("Finding something…");
+    fetch("https://www.themealdb.com/api/json/v1/1/random.php")
+      .then(function(r){ return r.json(); })
+      .then(function(data){ renderMealResults(data.meals); })
+      .catch(function(err){ console.error(err); setMealSearchStatus("Couldn't reach the recipe database — check your connection and try again."); });
+  }
+  document.getElementById("mealSearchBtn").addEventListener("click", doMealSearch);
+  document.getElementById("mealRandomBtn").addEventListener("click", doRandomMeal);
+  document.getElementById("mealSearchInput").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); doMealSearch(); } });
 
   // ---------- Recipe Modal ----------
   var recipeModal = document.getElementById("recipeModal");
