@@ -532,6 +532,17 @@
   </div>
 </div>
 
+<!-- Ingredients Modal -->
+<div class="modal-backdrop hidden" id="ingredientsModal">
+  <div class="modal" style="max-width:480px; max-height:80vh; overflow-y:auto;">
+    <h3 id="ingredientsModalTitle">Ingredients</h3>
+    <div id="ingredientsModalBody"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="ingredientsModalClose">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Instructions Modal -->
 <div class="modal-backdrop hidden" id="instructionsModal">
   <div class="modal" style="max-width:520px; max-height:80vh; overflow-y:auto;">
@@ -1176,6 +1187,20 @@
   function recipeCost(r){ return r.ingredients.reduce(function(a,i){return a+(i.cost||0);},0); }
   function recipeMatchesMealType(r, type){ return !r.mealTypes || r.mealTypes.length===0 || r.mealTypes.indexOf(type)>-1; }
   var instructionsModal = document.getElementById("instructionsModal");
+  var ingredientsModal = document.getElementById("ingredientsModal");
+  function openIngredientsModal(r){
+    document.getElementById("ingredientsModalTitle").textContent = r.name;
+    var rows = r.ingredients.map(function(i){
+      var amt = ((i.qty || 1)+(i.unit ? " "+i.unit : "")).trim();
+      return '<div class="grocery-item"><span>'+esc(amt)+' '+esc(i.name)+'</span><span class="amt">'+fmt(i.cost||0)+'</span></div>';
+    }).join("");
+    var total = recipeCost(r);
+    document.getElementById("ingredientsModalBody").innerHTML = rows +
+      '<div style="display:flex; justify-content:space-between; margin-top:10px; padding-top:10px; border-top:1px solid var(--rule); font-weight:700; font-size:14px;"><span>Total</span><span>'+fmt(total)+'</span></div>';
+    ingredientsModal.classList.remove("hidden");
+  }
+  document.getElementById("ingredientsModalClose").addEventListener("click", function(){ ingredientsModal.classList.add("hidden"); });
+  ingredientsModal.addEventListener("click", function(e){ if(e.target===ingredientsModal) ingredientsModal.classList.add("hidden"); });
   function openInstructionsModal(r){
     document.getElementById("instructionsModalTitle").textContent = r.name;
     document.getElementById("instructionsModalBody").innerHTML = formatInstructionsHTML(r.instructions);
@@ -1218,6 +1243,7 @@
         (r.mealTypes && r.mealTypes.length ? '<div style="display:flex; gap:4px; flex-wrap:wrap;">'+r.mealTypes.map(function(t){ return '<span class="chip locked" style="font-size:10.5px; padding:2px 8px;">'+esc(t)+'</span>'; }).join("")+'</div>' : '')+
         '<div class="rc-cost">'+fmt(total)+'</div>'+
         '<div class="rc-actions">'+
+          '<button class="btn small ghost" data-action="view-ingredients" data-id="'+r.id+'">View ingredients</button>'+
           (r.instructions ? '<button class="btn small ghost" data-action="view-instructions" data-id="'+r.id+'">View instructions</button>' : '')+
           '<button class="btn small ghost" data-action="edit-recipe" data-id="'+r.id+'">Edit</button>'+
           '<button class="btn small danger" data-action="delete-recipe" data-id="'+r.id+'">Delete</button>'+
@@ -1239,6 +1265,9 @@
         } else if(action==="view-instructions"){
           var recipe = state.recipes.find(function(x){return x.id===id;});
           if(recipe) openInstructionsModal(recipe);
+        } else if(action==="view-ingredients"){
+          var recipeForIng = state.recipes.find(function(x){return x.id===id;});
+          if(recipeForIng) openIngredientsModal(recipeForIng);
         } else {
           var r = state.recipes.find(function(x){return x.id===id;});
           if(r) openRecipeModal(r);
@@ -2181,11 +2210,11 @@
   window.addEventListener("afterprint", function(){ document.body.classList.remove("printing-grocery"); });
 
   // Close modals on backdrop click / Escape (all modal vars are defined by this point)
-  [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal].forEach(function(m){
+  [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal, ingredientsModal].forEach(function(m){
     m.addEventListener("click", function(e){ if(e.target===m) m.classList.add("hidden"); });
   });
   document.addEventListener("keydown", function(e){
-    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal].forEach(function(m){ m.classList.add("hidden"); }); }
+    if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal, ingredientsModal].forEach(function(m){ m.classList.add("hidden"); }); }
   });
 
   // ---------- Init ----------
