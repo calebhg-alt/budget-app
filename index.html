@@ -1164,6 +1164,19 @@
 
   function recipeCost(r){ return r.ingredients.reduce(function(a,i){return a+(i.cost||0);},0); }
   function recipeMatchesMealType(r, type){ return !r.mealTypes || r.mealTypes.length===0 || r.mealTypes.indexOf(type)>-1; }
+  // Renders multi-line instructions as a numbered list (stripping any pre-existing numbering
+  // like "1." or "1)" so steps don't get double-numbered); single-line text stays as plain prose.
+  function formatInstructionsHTML(instructions){
+    var lines = (instructions||"").split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
+    if(lines.length<=1){
+      return '<p style="margin:0; line-height:1.6;">'+esc(instructions||"")+'</p>';
+    }
+    var items = lines.map(function(l){
+      var clean = l.replace(/^\s*\(?\d+[\.\)]\s*/, "");
+      return '<li style="margin-bottom:8px; line-height:1.55;">'+esc(clean)+'</li>';
+    }).join("");
+    return '<ol style="margin:0; padding-left:20px;">'+items+'</ol>';
+  }
 
   function renderMealPrep(){
     renderRecipeGrid();
@@ -1185,7 +1198,7 @@
         '<div class="rc-meta">'+r.ingredients.length+' ingredients · serves '+r.servings+' · '+fmt(perServe)+'/serving</div>'+
         (r.mealTypes && r.mealTypes.length ? '<div style="display:flex; gap:4px; flex-wrap:wrap;">'+r.mealTypes.map(function(t){ return '<span class="chip locked" style="font-size:10.5px; padding:2px 8px;">'+esc(t)+'</span>'; }).join("")+'</div>' : '')+
         '<div class="rc-cost">'+fmt(total)+'</div>'+
-        (r.instructions ? '<details><summary style="cursor:pointer; font-size:12px; color:var(--ink-soft);">Instructions</summary><div style="font-size:12.5px; margin-top:6px; white-space:pre-wrap; color:var(--ink);">'+esc(r.instructions)+'</div></details>' : '')+
+        (r.instructions ? '<details><summary style="cursor:pointer; font-size:12px; color:var(--ink-soft); font-weight:600;">Instructions</summary><div style="font-size:13px; margin-top:8px; padding-top:8px; border-top:1px solid var(--rule); color:var(--ink); max-height:260px; overflow-y:auto; padding-right:6px;">'+formatInstructionsHTML(r.instructions)+'</div></details>' : '')+
         '<div class="rc-actions">'+
           '<button class="btn small ghost" data-action="edit-recipe" data-id="'+r.id+'">Edit</button>'+
           '<button class="btn small danger" data-action="delete-recipe" data-id="'+r.id+'">Delete</button>'+
