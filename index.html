@@ -1905,6 +1905,46 @@
   // ---------- Grocery List ----------
   // Aggregates ingredients across every meal slot in the current week's plan, combining
   // duplicate ingredient+unit pairs and multiplying by how many times a recipe is used that week.
+  // Ingredient names vary a lot between recipes ("onion" vs "onions" vs "onion, diced" vs "large onion") —
+  // normalize before grouping so the same ingredient collapses into one grocery line.
+  var PREP_DESCRIPTORS = ["fresh","large","medium","small","extra","virgin","organic","raw","cooked","frozen",
+    "canned","dried","ground","whole","fine","finely","coarsely","thinly","chopped","diced","minced","sliced",
+    "grated","shredded","crushed","peeled","boneless","skinless","ripe","softened","melted","unsalted","salted",
+    "yellow","white","red","green","purple"];
+  var NO_SINGULARIZE = { "hummus":1, "asparagus":1, "molasses":1, "couscous":1, "chorizo":1, "citrus":1 };
+  function normalizeIngredientName(name){
+    var n = (name||"").toLowerCase().trim();
+    n = n.split(",")[0].trim();          // "onion, diced" -> "onion"
+    n = n.replace(/\([^)]*\)/g,"").trim(); // drop parentheticals like "(15 oz)"
+    PREP_DESCRIPTORS.forEach(function(d){ n = n.replace(new RegExp("\\b"+d+"\\b","g"),""); });
+    n = n.replace(/\s+/g," ").trim();
+    if(NO_SINGULARIZE[n]){ /* leave as-is */ }
+    else if(/ies$/.test(n)) n = n.replace(/ies$/,"y");
+    else if(/oes$/.test(n)) n = n.replace(/oes$/,"o");
+    else if(/(ch|sh|x)es$/.test(n)) n = n.replace(/es$/,"");
+    else if(/[^s]s$/.test(n)) n = n.replace(/s$/,"");
+    return n.trim();
+  }
+  var UNIT_SYNONYMS = {
+    "tbsp":"tbsp","tablespoon":"tbsp","tablespoons":"tbsp",
+    "tsp":"tsp","teaspoon":"tsp","teaspoons":"tsp",
+    "cup":"cup","cups":"cup",
+    "lb":"lb","lbs":"lb","pound":"lb","pounds":"lb",
+    "oz":"oz","ounce":"oz","ounces":"oz",
+    "g":"g","gram":"g","grams":"g","kg":"kg","kilogram":"kg","kilograms":"kg",
+    "ml":"ml","l":"l",
+    "can":"can","cans":"can","clove":"clove","cloves":"clove",
+    "slice":"slice","slices":"slice","bunch":"bunch","bunches":"bunch",
+    "package":"package","packages":"package","pkg":"package",
+    "jar":"jar","jars":"jar","bag":"bag","bags":"bag",
+    "head":"head","heads":"head","stalk":"stalk","stalks":"stalk",
+    "pint":"pint","pints":"pint","quart":"quart","quarts":"quart","dozen":"dozen"
+  };
+  function normalizeUnit(unit){
+    var u = (unit||"").toLowerCase().trim();
+    if(!u) return "";
+    return UNIT_SYNONYMS[u] || u.replace(/s$/,"");
+  }
   function buildGroceryList(){
     var recipeCounts = {};
     state.mealPlan.days.forEach(function(d){
@@ -1913,32 +1953,36 @@
         if(id) recipeCounts[id] = (recipeCounts[id]||0) + 1;
       });
     });
-    var lineMap = {};
+    var nameGroups = {}; // normalized name -> { displayName, section, subUnits:{normUnit:{qty}}, totalCost }
     Object.keys(recipeCounts).forEach(function(rid){
       var r = state.recipes.find(function(x){return x.id===rid;});
       if(!r) return;
       var count = recipeCounts[rid];
       r.ingredients.forEach(function(ing){
-        var key = ing.name.toLowerCase().trim()+"|||"+(ing.unit||"").toLowerCase().trim();
-        if(!lineMap[key]){
-          lineMap[key] = { name: ing.name, unit: ing.unit||"", qty:0, cost:0, section: getIngredientSection(ing.name) };
+        var normName = normalizeIngredientName(ing.name) || ing.name.toLowerCase().trim();
+        var normUnit = normalizeUnit(ing.unit);
+        if(!nameGroups[normName]){
+          nameGroups[normName] = { displayName: ing.name.trim(), section: getIngredientSection(ing.name), subUnits: {}, totalCost: 0 };
         }
-        lineMap[key].qty += (ing.qty||0)*count;
-        lineMap[key].cost += (ing.cost||0)*count;
+        var grp = nameGroups[normName];
+        if(!grp.subUnits[normUnit]) grp.subUnits[normUnit] = 0;
+        grp.subUnits[normUnit] += (ing.qty||0)*count;
+        grp.totalCost += (ing.cost||0)*count;
       });
     });
     var sections = {};
-    Object.keys(lineMap).forEach(function(k){
-      var item = lineMap[k];
-      if(!sections[item.section]) sections[item.section] = [];
-      sections[item.section].push(item);
+    Object.keys(nameGroups).forEach(function(k){
+      var g = nameGroups[k];
+      var amount = Object.keys(g.subUnits).map(function(u){
+        var qtyStr = (Math.round(g.subUnits[u]*100)/100).toString();
+        return u ? (qtyStr+" "+u) : qtyStr;
+      }).join(" + ");
+      var item = { name: g.displayName, amount: amount, cost: g.totalCost, section: g.section };
+      if(!sections[g.section]) sections[g.section] = [];
+      sections[g.section].push(item);
     });
     Object.keys(sections).forEach(function(s){ sections[s].sort(function(a,b){ return a.name.localeCompare(b.name); }); });
     return sections;
-  }
-  function formatQty(item){
-    var qtyStr = (Math.round(item.qty*100)/100).toString();
-    return item.unit ? (qtyStr+" "+item.unit) : qtyStr;
   }
   var groceryListModal = document.getElementById("groceryListModal");
   function renderGroceryList(){
@@ -1954,7 +1998,7 @@
       return '<div class="grocery-section"><h4>'+esc(section)+'</h4>' +
         sections[section].map(function(item){
           total += item.cost;
-          return '<div class="grocery-item"><label><input type="checkbox" class="grocery-check">'+esc(item.name)+'</label><span class="amt">'+esc(formatQty(item))+'</span></div>';
+          return '<div class="grocery-item"><label><input type="checkbox" class="grocery-check">'+esc(item.name)+'</label><span class="amt">'+esc(item.amount)+'</span></div>';
         }).join("") +
       '</div>';
     }).join("");
@@ -1980,7 +2024,7 @@
       lines.push(section.toUpperCase());
       sections[section].forEach(function(item){
         total += item.cost;
-        lines.push("[ ] "+formatQty(item)+" "+item.name);
+        lines.push("[ ] "+item.amount+" "+item.name);
       });
       lines.push("");
     });
@@ -2002,7 +2046,7 @@
       order.map(function(section){
         return '<h4>'+esc(section)+'</h4>' + sections[section].map(function(item){
           total += item.cost;
-          return '<div class="p-item">☐ '+esc(formatQty(item))+' '+esc(item.name)+'</div>';
+          return '<div class="p-item">☐ '+esc(item.amount)+' '+esc(item.name)+'</div>';
         }).join("");
       }).join("") +
       '<div class="print-sub" style="margin-top:16px;">Estimated total: '+fmt(total)+'</div>';
