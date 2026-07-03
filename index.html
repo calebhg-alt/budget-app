@@ -155,7 +155,7 @@
   .legend-item .swatch{ width:10px; height:10px; border-radius:2px; }
   .legend-item .val{ font-family:var(--mono); color:var(--ink-soft); }
 
-  .modal-backdrop{ position:fixed; inset:0; background:rgba(28,30,27,.35); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; overflow-y:auto; }
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(28,30,27,.35); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; }
   .modal{ background:var(--paper-raised); border-radius:12px; padding:24px; width:100%; max-width:420px; border:1px solid var(--rule); max-height:88vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
   .modal h3{ margin:0 0 16px; }
   .modal .form-row{ margin-bottom:14px; }
@@ -2375,6 +2375,32 @@
   document.addEventListener("keydown", function(e){
     if(e.key==="Escape"){ [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal, ingredientsModal].forEach(function(m){ m.classList.add("hidden"); }); }
   });
+
+  // Mobile keyboards cover part of the screen without the layout viewport knowing, which can hide
+  // a modal's Save button behind the keyboard. visualViewport reports the actually-visible area,
+  // so we resize/reposition modals to fit within it whenever the keyboard opens/closes or the
+  // device rotates.
+  function syncModalsToViewport(){
+    if(!window.visualViewport) return;
+    var vv = window.visualViewport;
+    document.querySelectorAll(".modal-backdrop").forEach(function(b){
+      b.style.left = vv.offsetLeft+"px";
+      b.style.top = vv.offsetTop+"px";
+      b.style.right = "auto";
+      b.style.bottom = "auto";
+      b.style.width = vv.width+"px";
+      b.style.height = vv.height+"px";
+    });
+    document.querySelectorAll(".modal").forEach(function(m){
+      m.style.maxHeight = Math.max(200, Math.round(vv.height*0.9))+"px";
+    });
+  }
+  if(window.visualViewport){
+    window.visualViewport.addEventListener("resize", syncModalsToViewport);
+    window.visualViewport.addEventListener("scroll", syncModalsToViewport);
+  }
+  window.addEventListener("orientationchange", function(){ setTimeout(syncModalsToViewport, 300); });
+  syncModalsToViewport();
 
   // ---------- Init ----------
   renderDashboard();
