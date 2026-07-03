@@ -475,7 +475,12 @@
     </div>
 
     <div class="tab-panel" id="tabPaste">
-      <textarea id="pasteText" placeholder="Paste ingredients, or a whole recipe (title, ingredients, instructions) — e.g.&#10;2 lb ground turkey&#10;1 can black beans&#10;1 onion&#10;2 tbsp chili powder"></textarea>
+      <div class="form-row" style="margin-bottom:10px;">
+        <div class="field" style="flex:1; min-width:220px;"><label>Import from a recipe link</label><input type="url" id="recipeUrlInput" placeholder="https://example.com/recipe/..."></div>
+        <button class="btn ghost small" id="fetchUrlBtn">Fetch recipe</button>
+      </div>
+      <div id="urlFetchStatus" style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;"></div>
+      <textarea id="pasteText" placeholder="...or paste ingredients / a whole recipe here — e.g.&#10;2 lb ground turkey&#10;1 can black beans&#10;1 onion&#10;2 tbsp chili powder"></textarea>
       <div class="parse-note">Estimates costs from typical U.S. grocery prices — review and adjust before saving. Works with a plain ingredient list or a full pasted recipe.</div>
       <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
         <button class="btn ghost small" id="parseTextBtn">Parse ingredients</button>
@@ -1345,6 +1350,7 @@
     document.getElementById("pasteText").value = "";
     document.getElementById("parsedPreview").innerHTML = "";
     document.getElementById("pdfStatus").textContent = "";
+    document.getElementById("urlFetchStatus").textContent = "";
     parsedIngredients = [];
     manualIngredients = r ? r.ingredients.map(function(i){ return Object.assign({},i); }) : [];
     pendingImportMeta = { thumbnail: r ? (r.thumbnail||null) : null, source: r ? (r.source||null) : null };
@@ -1356,27 +1362,31 @@
   }
   // Opens the editor pre-filled from an online search result (any source), so ingredients/instructions
   // can be reviewed and cost estimates checked before the person explicitly saves it.
-  function openRecipeModalFromUnified(unified){
+  function applyUnifiedToOpenModal(unified){
     var ingredients = unified.ingredients.map(function(i){
       return { id: uid(), name: i.name, qty: i.qty||1, unit: i.unit||"", cost: estimateIngredientCost(i.name, i.qty||1) };
     });
     var instructions = unified.instructions && unified.instructions.trim()
       ? unified.instructions.trim()
       : (unified.externalUrl ? "Full instructions: "+unified.externalUrl : "");
-    editingRecipeId = null;
-    document.getElementById("recipeModalTitle").textContent = "Add recipe";
     document.getElementById("recipeName").value = unified.title || "";
     document.getElementById("recipeServings").value = unified.servings || 4;
     document.getElementById("recipeInstructions").value = instructions;
-    document.getElementById("pasteText").value = "";
-    document.getElementById("parsedPreview").innerHTML = "";
-    document.getElementById("pdfStatus").textContent = "";
     parsedIngredients = [];
     manualIngredients = ingredients;
     pendingImportMeta = { thumbnail: unified.image||null, source: unified.sourceLabel||null };
     setTab("manual");
     renderManualRows();
     updateRunningTotal();
+  }
+  function openRecipeModalFromUnified(unified){
+    editingRecipeId = null;
+    document.getElementById("recipeModalTitle").textContent = "Add recipe";
+    document.getElementById("pasteText").value = "";
+    document.getElementById("parsedPreview").innerHTML = "";
+    document.getElementById("pdfStatus").textContent = "";
+    document.getElementById("urlFetchStatus").textContent = "";
+    applyUnifiedToOpenModal(unified);
     recipeModal.classList.remove("hidden");
     document.getElementById("recipeName").focus();
   }
@@ -1413,6 +1423,137 @@
     if(result.servings && (servEl.value==="" || servEl.value==="4")) servEl.value = result.servings;
     if(result.instructions && !instrEl.value.trim()) instrEl.value = result.instructions;
   }
+
+  // ---------- Import from a recipe link ----------
+  // Most recipe sites embed schema.org "Recipe" structured data (the same data Google uses
+  // for recipe search cards) as JSON-LD — that's the most reliable source when present.
+  function findRecipeNode(node){
+    if(!node || typeof node!=="object") return null;
+    if(Array.isArray(node)){
+      for(var i=0;i<node.length;i++){ var found=findRecipeNode(node[i]); if(found) return found; }
+      return null;
+    }
+    var type = node["@type"];
+    if(type && (type==="Recipe" || (Array.isArray(type) && type.indexOf("Recipe")>-1))) return node;
+    if(node["@graph"]) return findRecipeNode(node["@graph"]);
+    return null;
+  }
+  function extractInstructionText(ri){
+    if(!ri) return "";
+    if(typeof ri === "string") return ri;
+    if(Array.isArray(ri)){
+      return ri.map(function(step){
+        if(typeof step === "string") return step;
+        if(step["@type"]==="HowToSection" && step.itemListElement) return (step.name?step.name+"\n":"")+extractInstructionText(step.itemListElement);
+        return step.text || step.name || "";
+      }).filter(Boolean).join("\n");
+    }
+    if(typeof ri === "object") return ri.text || ri.name || "";
+    return "";
+  }
+  function firstImageUrl(img){
+    if(!img) return "";
+    if(typeof img === "string") return img;
+    if(Array.isArray(img)) return firstImageUrl(img[0]);
+    if(typeof img === "object") return img.url || "";
+    return "";
+  }
+  function jsonLdRecipeFromHtml(html){
+    var doc = new DOMParser().parseFromString(html, "text/html");
+    var scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    for(var i=0;i<scripts.length;i++){
+      try{
+        var parsed = JSON.parse(scripts[i].textContent);
+        var recipe = findRecipeNode(parsed);
+        if(recipe) return recipe;
+      }catch(e){ /* not valid JSON, skip */ }
+    }
+    return null;
+  }
+  function htmlToPlainText(html){
+    var cleaned = html.replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<style[\s\S]*?<\/style>/gi,"");
+    cleaned = cleaned.replace(/<(br|\/p|\/li|\/div|\/h[1-6]|\/tr)[^>]*>/gi,"\n");
+    cleaned = cleaned.replace(/<[^>]+>/g," ");
+    var ta = document.createElement("textarea");
+    ta.innerHTML = cleaned;
+    return ta.value.replace(/[ \t]+/g," ").replace(/\n[ \t]*\n+/g,"\n").trim();
+  }
+  function ogImageFromHtml(html){
+    var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    return m ? m[1] : "";
+  }
+  function fetchViaProxy(url){
+    return fetch("https://api.allorigins.win/raw?url="+encodeURIComponent(url)).then(function(r){
+      if(!r.ok) throw new Error("proxy fetch failed");
+      return r.text();
+    });
+  }
+  function fetchViaReaderFallback(url){
+    return fetch("https://r.jina.ai/"+url).then(function(r){
+      if(!r.ok) throw new Error("reader fetch failed");
+      return r.text();
+    });
+  }
+  document.getElementById("fetchUrlBtn").addEventListener("click", function(){
+    var statusEl = document.getElementById("urlFetchStatus");
+    var raw = document.getElementById("recipeUrlInput").value.trim();
+    if(!raw){ statusEl.textContent = "Paste a recipe URL first."; return; }
+    var url = /^https?:\/\//i.test(raw) ? raw : "https://"+raw;
+    var hostname = "";
+    try{ hostname = new URL(url).hostname.replace(/^www\./,""); }catch(e){ hostname = "that site"; }
+    statusEl.textContent = "Fetching "+hostname+"…";
+
+    fetchViaProxy(url).then(function(html){
+      var recipe = jsonLdRecipeFromHtml(html);
+      if(recipe){
+        var ingredientLines = recipe.recipeIngredient || recipe.ingredients || [];
+        var ingredients = ingredientLines.map(function(line){
+          var p = parseIngredientLine(line) || { name: line, qty:1, unit:"" };
+          return { name:p.name, qty:p.qty, unit:p.unit };
+        });
+        var yieldRaw = recipe.recipeYield;
+        var yieldStr = Array.isArray(yieldRaw) ? yieldRaw[0] : yieldRaw;
+        var servingsMatch = (yieldStr||"").toString().match(/\d+/);
+        var unified = {
+          title: recipe.name || "", image: firstImageUrl(recipe.image) || ogImageFromHtml(html),
+          meta: hostname, servings: servingsMatch ? parseInt(servingsMatch[0],10) : 4,
+          ingredients: ingredients, instructions: extractInstructionText(recipe.recipeInstructions),
+          sourceLabel: hostname, externalUrl: url
+        };
+        applyUnifiedToOpenModal(unified);
+        statusEl.textContent = "Imported "+ingredients.length+" ingredients from "+hostname+" — review below before saving.";
+      } else {
+        var text = htmlToPlainText(html);
+        var result = parseFullText(text);
+        document.getElementById("pasteText").value = text;
+        parsedIngredients = result.ingredients;
+        applyDetectedFields(result);
+        setTab("paste");
+        renderParsedPreview();
+        updateRunningTotal();
+        statusEl.textContent = result.ingredients.length>0
+          ? "Couldn't find structured recipe data on that page — did a best-effort text scrape, please review carefully."
+          : "Couldn't find a clear recipe on that page — try pasting the text manually instead.";
+      }
+    }).catch(function(){
+      // Primary proxy failed (site blocked it, proxy down, etc.) — try a plain-text reader as a second attempt.
+      statusEl.textContent = "First attempt failed — trying a different method…";
+      fetchViaReaderFallback(url).then(function(text){
+        var result = parseFullText(text);
+        document.getElementById("pasteText").value = text;
+        parsedIngredients = result.ingredients;
+        applyDetectedFields(result);
+        setTab("paste");
+        renderParsedPreview();
+        updateRunningTotal();
+        statusEl.textContent = result.ingredients.length>0
+          ? "Did a best-effort text extraction from "+hostname+" — please review carefully before saving."
+          : "Couldn't extract a recipe from that page. Try copying the text and pasting it instead.";
+      }).catch(function(){
+        statusEl.textContent = "Couldn't fetch that page — the site may block automated access. Try copying the recipe text and pasting it instead.";
+      });
+    });
+  });
 
   // ---------- PDF upload ----------
   document.getElementById("uploadPdfBtn").addEventListener("click", function(){
