@@ -380,8 +380,16 @@
       </div>
       <div class="recipe-grid" id="recipeGrid"></div>
 
-      <div class="section-title"><h3>This week's plan</h3></div>
+      <div class="section-title"><h3>Weekly plan</h3></div>
       <div class="card">
+        <div class="form-row" style="margin-bottom:14px;">
+          <div class="field" style="flex:1; min-width:180px;"><label>Viewing week</label><select id="weekPlanSelect"></select></div>
+          <button class="btn ghost small" id="newWeekBtn">+ New week</button>
+          <button class="btn ghost small" id="duplicateWeekBtn">Duplicate</button>
+          <button class="btn ghost small" id="renameWeekBtn">Rename</button>
+          <button class="btn ghost small" id="deleteWeekBtn">Delete week</button>
+        </div>
+
         <div class="budget-summary">
           <div class="field"><label>Weekly grocery budget</label><input type="number" id="weeklyBudgetInput" min="0" step="1" placeholder="e.g. 120"></div>
           <button class="btn ghost" id="suggestPlanBtn">Suggest a week</button>
@@ -403,6 +411,7 @@
           <div class="bar-track"><div class="bar-fill ok" id="weekTotalBar" style="width:0%"></div></div>
         </div>
         <div style="margin-top:16px; display:flex; justify-content:flex-end; gap:10px;">
+          <button class="btn ghost" id="printWeekBtn">Print week</button>
           <button class="btn ghost" id="groceryListBtn">Grocery list</button>
           <button class="btn" id="logWeekBtn">Log this week to Food budget</button>
         </div>
@@ -543,6 +552,9 @@
 <div class="modal-backdrop hidden" id="ingredientsModal">
   <div class="modal" style="max-width:480px; max-height:80vh; overflow-y:auto;">
     <h3 id="ingredientsModalTitle">Ingredients</h3>
+    <div class="form-row" style="margin-bottom:10px;">
+      <div class="field"><label>Scale to servings</label><input type="number" id="ingredientsServingsInput" min="1" step="1" style="width:90px;"></div>
+    </div>
     <div id="ingredientsModalBody"></div>
     <div class="modal-actions">
       <button class="btn ghost" id="ingredientsModalClose">Close</button>
@@ -629,27 +641,39 @@
   };
   var DAY_NAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   var DEFAULT_MEAL_TYPES = ["Breakfast","Lunch","Dinner"];
-  function defaultMealPlan(){
-    return { weeklyBudget: 0, mealTypes: DEFAULT_MEAL_TYPES.slice(), days: DAY_NAMES.map(function(d){
-      var meals = {}; DEFAULT_MEAL_TYPES.forEach(function(t){ meals[t]=null; });
+  function emptyWeekDays(mealTypes){
+    return DAY_NAMES.map(function(d){
+      var meals = {}; mealTypes.forEach(function(t){ meals[t]=null; });
       return { day:d, meals: meals };
-    }) };
+    });
   }
-  // Handles old saves (single recipeId per day) and backfills any meal types added after a plan was created.
-  function normalizeMealPlan(mp){
-    if(!mp.mealTypes || mp.mealTypes.length===0) mp.mealTypes = DEFAULT_MEAL_TYPES.slice();
-    mp.days.forEach(function(d){
+  function makeWeekPlan(label, mealTypes){
+    return { id: uid(), label: label, weeklyBudget: 0, days: emptyWeekDays(mealTypes) };
+  }
+  // Ensures every day in a plan has an entry for every current meal type (backfills types added later,
+  // and cleans up old single-recipe-per-day saves from before meal types existed).
+  function normalizeWeekPlan(plan, mealTypes){
+    plan.days.forEach(function(d){
       if(!d.meals){
         var oldId = d.recipeId || null;
         d.meals = {};
-        mp.mealTypes.forEach(function(t){ d.meals[t]=null; });
-        if(oldId) d.meals[mp.mealTypes[mp.mealTypes.length-1]] = oldId;
+        mealTypes.forEach(function(t){ d.meals[t]=null; });
+        if(oldId) d.meals[mealTypes[mealTypes.length-1]] = oldId;
         delete d.recipeId;
       } else {
-        mp.mealTypes.forEach(function(t){ if(!(t in d.meals)) d.meals[t]=null; });
+        mealTypes.forEach(function(t){ if(!(t in d.meals)) d.meals[t]=null; });
       }
     });
-    return mp;
+    if(!plan.label) plan.label = "Week";
+    if(!plan.id) plan.id = uid();
+    return plan;
+  }
+  function currentPlan(){
+    var found = state.mealPlans.find(function(p){ return p.id===state.currentPlanId; });
+    if(found) return found;
+    // fall back to the first plan if the saved currentPlanId no longer matches anything
+    state.currentPlanId = state.mealPlans[0].id;
+    return state.mealPlans[0];
   }
   var UNIT_WORDS = ["lb","lbs","pound","pounds","oz","ounce","ounces","cup","cups","tbsp","tablespoon","tablespoons",
     "tsp","teaspoon","teaspoons","can","cans","cloves","clove","bunch","bunches","package","packages","pkg",
@@ -763,11 +787,28 @@
         var parsed = JSON.parse(raw);
         parsed.transactions = parsed.transactions || []; parsed.budgets = parsed.budgets || {}; parsed.goals = parsed.goals || [];
         parsed.recipes = parsed.recipes || [];
-        parsed.mealPlan = normalizeMealPlan(parsed.mealPlan || defaultMealPlan());
+        parsed.mealTypes = parsed.mealTypes || (parsed.mealPlan && parsed.mealPlan.mealTypes) || DEFAULT_MEAL_TYPES.slice();
+        if(!parsed.mealPlans || parsed.mealPlans.length===0){
+          // Migrate an old single-week save into the new multi-week array.
+          if(parsed.mealPlan){
+            var migrated = normalizeWeekPlan({ id: uid(), label: "Week 1", weeklyBudget: parsed.mealPlan.weeklyBudget||0, days: parsed.mealPlan.days||[] }, parsed.mealTypes);
+            parsed.mealPlans = [migrated];
+          } else {
+            parsed.mealPlans = [makeWeekPlan("Week 1", parsed.mealTypes)];
+          }
+        } else {
+          parsed.mealPlans.forEach(function(p){ normalizeWeekPlan(p, parsed.mealTypes); });
+        }
+        delete parsed.mealPlan;
+        if(!parsed.currentPlanId || !parsed.mealPlans.some(function(p){return p.id===parsed.currentPlanId;})){
+          parsed.currentPlanId = parsed.mealPlans[0].id;
+        }
         return parsed;
       }
     }catch(e){ console.error("Failed to load data", e); }
-    return { transactions: [], budgets: {}, goals: [], recipes: [], mealPlan: defaultMealPlan() };
+    var freshTypes = DEFAULT_MEAL_TYPES.slice();
+    var freshPlan = makeWeekPlan("Week 1", freshTypes);
+    return { transactions: [], budgets: {}, goals: [], recipes: [], mealTypes: freshTypes, mealPlans: [freshPlan], currentPlanId: freshPlan.id };
   }
   function saveState(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -1197,15 +1238,30 @@
   var ingredientsModal = document.getElementById("ingredientsModal");
   document.getElementById("recipeSearchInput").addEventListener("input", renderRecipeGrid);
   document.getElementById("recipeTypeFilter").addEventListener("change", renderRecipeGrid);
-  function openIngredientsModal(r){
-    document.getElementById("ingredientsModalTitle").textContent = r.name;
+  var currentIngredientsRecipe = null;
+  function renderIngredientsModalBody(){
+    var r = currentIngredientsRecipe;
+    if(!r) return;
+    var baseServings = r.servings>0 ? r.servings : 1;
+    var targetServings = parseInt(document.getElementById("ingredientsServingsInput").value,10) || baseServings;
+    var ratio = targetServings/baseServings;
+    var total = 0;
     var rows = r.ingredients.map(function(i){
-      var amt = ((i.qty || 1)+(i.unit ? " "+i.unit : "")).trim();
-      return '<div class="grocery-item"><span>'+esc(amt)+' '+esc(i.name)+'</span><span class="amt">'+fmt(i.cost||0)+'</span></div>';
+      var scaledQty = Math.round((i.qty||1)*ratio*100)/100;
+      var scaledCost = (i.cost||0)*ratio;
+      total += scaledCost;
+      var amt = (scaledQty+(i.unit ? " "+i.unit : "")).trim();
+      return '<div class="grocery-item"><span>'+esc(amt)+' '+esc(i.name)+'</span><span class="amt">'+fmt(scaledCost)+'</span></div>';
     }).join("");
-    var total = recipeCost(r);
     document.getElementById("ingredientsModalBody").innerHTML = rows +
       '<div style="display:flex; justify-content:space-between; margin-top:10px; padding-top:10px; border-top:1px solid var(--rule); font-weight:700; font-size:14px;"><span>Total</span><span>'+fmt(total)+'</span></div>';
+  }
+  document.getElementById("ingredientsServingsInput").addEventListener("input", renderIngredientsModalBody);
+  function openIngredientsModal(r){
+    currentIngredientsRecipe = r;
+    document.getElementById("ingredientsModalTitle").textContent = r.name;
+    document.getElementById("ingredientsServingsInput").value = r.servings>0 ? r.servings : 1;
+    renderIngredientsModalBody();
     ingredientsModal.classList.remove("hidden");
   }
   document.getElementById("ingredientsModalClose").addEventListener("click", function(){ ingredientsModal.classList.add("hidden"); });
@@ -1239,8 +1295,8 @@
   function refreshRecipeTypeFilterOptions(){
     var sel = document.getElementById("recipeTypeFilter");
     var prev = sel.value || "all";
-    sel.innerHTML = '<option value="all">All</option>' + state.mealPlan.mealTypes.map(function(t){ return '<option value="'+esc(t)+'">'+esc(t)+'</option>'; }).join("");
-    sel.value = (prev==="all" || state.mealPlan.mealTypes.indexOf(prev)>-1) ? prev : "all";
+    sel.innerHTML = '<option value="all">All</option>' + state.mealTypes.map(function(t){ return '<option value="'+esc(t)+'">'+esc(t)+'</option>'; }).join("");
+    sel.value = (prev==="all" || state.mealTypes.indexOf(prev)>-1) ? prev : "all";
   }
   function renderRecipeGrid(){
     refreshRecipeTypeFilterOptions();
@@ -1284,8 +1340,10 @@
         if(action==="delete-recipe"){
           if(confirm("Delete this recipe? It will be removed from any planned days.")){
             state.recipes = state.recipes.filter(function(r){return r.id!==id;});
-            state.mealPlan.days.forEach(function(d){
-              state.mealPlan.mealTypes.forEach(function(t){ if(d.meals[t]===id) d.meals[t]=null; });
+            state.mealPlans.forEach(function(p){
+              p.days.forEach(function(d){
+                state.mealTypes.forEach(function(t){ if(d.meals[t]===id) d.meals[t]=null; });
+              });
             });
             saveState(); renderMealPrep();
           }
@@ -1477,7 +1535,7 @@
   var pendingImportMeta = { thumbnail: null, source: null };
   function renderMealTypeChecks(selected){
     var wrap = document.getElementById("recipeMealTypesChecks");
-    wrap.innerHTML = state.mealPlan.mealTypes.map(function(t){
+    wrap.innerHTML = state.mealTypes.map(function(t){
       var checked = selected && selected.indexOf(t)>-1;
       return '<label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:500; cursor:pointer;"><input type="checkbox" class="meal-type-check" value="'+esc(t)+'" '+(checked?"checked":"")+'>'+esc(t)+'</label>';
     }).join("");
@@ -1869,8 +1927,8 @@
   // ---------- Weekly Plan ----------
   function weekPlanTotal(){
     var total = 0;
-    state.mealPlan.days.forEach(function(d){
-      state.mealPlan.mealTypes.forEach(function(t){
+    currentPlan().days.forEach(function(d){
+      state.mealTypes.forEach(function(t){
         var r = state.recipes.find(function(x){return x.id===d.meals[t];});
         if(r) total += recipeCost(r);
       });
@@ -1880,16 +1938,16 @@
 
   function renderMealTypeChips(){
     var el = document.getElementById("mealTypeChips");
-    el.innerHTML = state.mealPlan.mealTypes.map(function(t){
-      var removable = state.mealPlan.mealTypes.length>1;
+    el.innerHTML = state.mealTypes.map(function(t){
+      var removable = state.mealTypes.length>1;
       return '<span class="chip'+(removable?"":" locked")+'">'+esc(t)+(removable ? ' <button type="button" data-type="'+esc(t)+'" aria-label="Remove '+esc(t)+'">×</button>' : '')+'</span>';
     }).join("");
     el.querySelectorAll("button[data-type]").forEach(function(btn){
       btn.addEventListener("click", function(){
         var type = btn.getAttribute("data-type");
         if(!confirm('Remove "'+type+'" from every day\'s plan?')) return;
-        state.mealPlan.mealTypes = state.mealPlan.mealTypes.filter(function(t){return t!==type;});
-        state.mealPlan.days.forEach(function(d){ delete d.meals[type]; });
+        state.mealTypes = state.mealTypes.filter(function(t){return t!==type;});
+        state.mealPlans.forEach(function(p){ p.days.forEach(function(d){ delete d.meals[type]; }); });
         saveState(); renderWeekGrid();
       });
     });
@@ -1898,10 +1956,10 @@
     var input = document.getElementById("newMealTypeInput");
     var name = input.value.trim();
     if(!name){ return; }
-    var exists = state.mealPlan.mealTypes.some(function(t){ return t.toLowerCase()===name.toLowerCase(); });
+    var exists = state.mealTypes.some(function(t){ return t.toLowerCase()===name.toLowerCase(); });
     if(exists){ alert('"'+name+'" is already a meal type.'); return; }
-    state.mealPlan.mealTypes.push(name);
-    state.mealPlan.days.forEach(function(d){ d.meals[name] = null; });
+    state.mealTypes.push(name);
+    state.mealPlans.forEach(function(p){ p.days.forEach(function(d){ d.meals[name] = null; }); });
     input.value = "";
     saveState(); renderWeekGrid();
   });
@@ -1909,14 +1967,53 @@
     if(e.key==="Enter"){ e.preventDefault(); document.getElementById("addMealTypeBtn").click(); }
   });
 
+  // ---------- Week plan selector ----------
+  function refreshWeekSelect(){
+    var sel = document.getElementById("weekPlanSelect");
+    sel.innerHTML = state.mealPlans.map(function(p){
+      return '<option value="'+p.id+'" '+(p.id===state.currentPlanId?"selected":"")+'>'+esc(p.label)+'</option>';
+    }).join("");
+  }
+  document.getElementById("weekPlanSelect").addEventListener("change", function(){
+    state.currentPlanId = this.value;
+    saveState(); renderWeekGrid();
+  });
+  document.getElementById("newWeekBtn").addEventListener("click", function(){
+    var plan = makeWeekPlan("Week "+(state.mealPlans.length+1), state.mealTypes);
+    state.mealPlans.push(plan);
+    state.currentPlanId = plan.id;
+    saveState(); renderWeekGrid();
+  });
+  document.getElementById("duplicateWeekBtn").addEventListener("click", function(){
+    var src = currentPlan();
+    var clone = { id: uid(), label: src.label+" copy", weeklyBudget: src.weeklyBudget,
+      days: src.days.map(function(d){ return { day:d.day, meals: Object.assign({}, d.meals) }; }) };
+    state.mealPlans.push(clone);
+    state.currentPlanId = clone.id;
+    saveState(); renderWeekGrid();
+  });
+  document.getElementById("renameWeekBtn").addEventListener("click", function(){
+    var plan = currentPlan();
+    var name = prompt("Rename this week:", plan.label);
+    if(name && name.trim()){ plan.label = name.trim(); saveState(); refreshWeekSelect(); }
+  });
+  document.getElementById("deleteWeekBtn").addEventListener("click", function(){
+    if(state.mealPlans.length<=1){ alert("You need at least one week plan — can't delete the last one."); return; }
+    if(!confirm('Delete "'+currentPlan().label+'"? This can\'t be undone.')) return;
+    state.mealPlans = state.mealPlans.filter(function(p){ return p.id!==state.currentPlanId; });
+    state.currentPlanId = state.mealPlans[0].id;
+    saveState(); renderWeekGrid();
+  });
+
   function renderWeekGrid(){
+    refreshWeekSelect();
     var input = document.getElementById("weeklyBudgetInput");
-    if(document.activeElement!==input) input.value = state.mealPlan.weeklyBudget || "";
+    if(document.activeElement!==input) input.value = currentPlan().weeklyBudget || "";
     renderMealTypeChips();
     var grid = document.getElementById("weekGrid");
-    grid.innerHTML = state.mealPlan.days.map(function(d,dayIdx){
+    grid.innerHTML = currentPlan().days.map(function(d,dayIdx){
       var dayTotal = 0;
-      var slots = state.mealPlan.mealTypes.map(function(t){
+      var slots = state.mealTypes.map(function(t){
         var r = state.recipes.find(function(x){return x.id===d.meals[t];});
         if(r) dayTotal += recipeCost(r);
         var matches = state.recipes.filter(function(rr){ return recipeMatchesMealType(rr, t); });
@@ -1957,7 +2054,7 @@
       sel.addEventListener("change", function(){
         var dayIdx = parseInt(sel.getAttribute("data-day-idx"));
         var type = sel.getAttribute("data-type");
-        state.mealPlan.days[dayIdx].meals[type] = sel.value || null;
+        currentPlan().days[dayIdx].meals[type] = sel.value || null;
         saveState(); renderWeekGrid();
       });
     });
@@ -1965,7 +2062,7 @@
   }
   function updateWeekTotal(){
     var total = weekPlanTotal();
-    var budget = state.mealPlan.weeklyBudget || 0;
+    var budget = currentPlan().weeklyBudget || 0;
     document.getElementById("weekTotalNums").textContent = budget>0 ? fmt(total)+" / "+fmt(budget) : fmt(total)+" (no budget set)";
     var pct = budget>0 ? (total/budget)*100 : 0;
     var cls = budget<=0 ? "ok" : (pct<80 ? "ok" : (pct<=100 ? "warn" : "over"));
@@ -1974,20 +2071,20 @@
     bar.style.width = Math.min(100, pct||0)+"%";
   }
   document.getElementById("weeklyBudgetInput").addEventListener("change", function(){
-    state.mealPlan.weeklyBudget = parseFloat(this.value)||0;
+    currentPlan().weeklyBudget = parseFloat(this.value)||0;
     saveState(); updateWeekTotal();
   });
   document.getElementById("clearPlanBtn").addEventListener("click", function(){
     if(!confirm("Clear all meals from this week's plan?")) return;
-    state.mealPlan.days.forEach(function(d){ state.mealPlan.mealTypes.forEach(function(t){ d.meals[t]=null; }); });
+    currentPlan().days.forEach(function(d){ state.mealTypes.forEach(function(t){ d.meals[t]=null; }); });
     saveState(); renderWeekGrid();
   });
 
   document.getElementById("suggestPlanBtn").addEventListener("click", function(){
     if(state.recipes.length===0){ alert("Add a few recipes first, then I can suggest a week."); return; }
-    var budget = state.mealPlan.weeklyBudget || 0;
+    var budget = currentPlan().weeklyBudget || 0;
     var pools = {}; // per meal type: { sorted, shuffled }
-    state.mealPlan.mealTypes.forEach(function(t){
+    state.mealTypes.forEach(function(t){
       var eligible = state.recipes.filter(function(r){ return recipeMatchesMealType(r, t); });
       if(eligible.length===0) eligible = state.recipes.slice(); // nothing tagged for this type — fall back to anything
       pools[t] = {
@@ -1997,8 +2094,8 @@
       };
     });
     var total = 0;
-    state.mealPlan.days.forEach(function(d){
-      state.mealPlan.mealTypes.forEach(function(t){
+    currentPlan().days.forEach(function(d){
+      state.mealTypes.forEach(function(t){
         var pool = pools[t];
         var candidate = pool.shuffled[pool.idx % pool.shuffled.length]; pool.idx++;
         var candCost = recipeCost(candidate);
@@ -2076,8 +2173,8 @@
   }
   function buildGroceryList(){
     var recipeCounts = {};
-    state.mealPlan.days.forEach(function(d){
-      state.mealPlan.mealTypes.forEach(function(t){
+    currentPlan().days.forEach(function(d){
+      state.mealTypes.forEach(function(t){
         var id = d.meals[t];
         if(id) recipeCounts[id] = (recipeCounts[id]||0) + 1;
       });
@@ -2251,6 +2348,25 @@
     window.print();
   });
   window.addEventListener("afterprint", function(){ document.body.classList.remove("printing-grocery"); });
+
+  document.getElementById("printWeekBtn").addEventListener("click", function(){
+    var plan = currentPlan();
+    var hasAny = plan.days.some(function(d){ return state.mealTypes.some(function(t){ return !!d.meals[t]; }); });
+    if(!hasAny){ alert("Nothing planned yet — assign recipes in the week grid first."); return; }
+    var html = '<h2>'+esc(plan.label)+'</h2><div class="print-sub">Weekly meal plan</div>' +
+      plan.days.map(function(d){
+        var rows = state.mealTypes.map(function(t){
+          var r = state.recipes.find(function(x){return x.id===d.meals[t];});
+          return '<div class="p-item"><strong>'+esc(t)+':</strong> '+(r ? esc(r.name)+' ('+fmt(recipeCost(r))+')' : '—')+'</div>';
+        }).join("");
+        return '<h4>'+esc(d.day)+'</h4>'+rows;
+      }).join("") +
+      '<div class="print-sub" style="margin-top:16px;">Week total: '+fmt(weekPlanTotal())+'</div>';
+    var printArea = document.getElementById("groceryPrintArea");
+    printArea.innerHTML = html;
+    document.body.classList.add("printing-grocery");
+    window.print();
+  });
 
   // Close modals on backdrop click / Escape (all modal vars are defined by this point)
   [txnModal, goalModal, contribModal, recipeModal, logWeekModal, groceryListModal, instructionsModal, ingredientsModal].forEach(function(m){
